@@ -6,6 +6,15 @@ import {
   collectChatCompletion,
   type ChatCompletionsBody,
 } from "../translate/chat-completions.js";
+import {
+  formatApiError,
+  formatJsonParseError,
+  formatMissingMessages,
+  formatNetworkError,
+  formatNoBody,
+  formatNotAuthenticated,
+  printError,
+} from "../cli/help-errors.js";
 
 function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -24,9 +33,7 @@ export async function callCommand(arg: string | undefined): Promise<number> {
   let raw = (arg ?? "").trim();
   if (raw.length === 0) raw = (await readStdin()).trim();
   if (raw.length === 0) {
-    process.stderr.write(
-      "Error: provide the Chat Completions request body as a JSON argument or via stdin.\n",
-    );
+    printError(formatNoBody());
     return 2;
   }
 
@@ -34,19 +41,19 @@ export async function callCommand(arg: string | undefined): Promise<number> {
   try {
     body = JSON.parse(raw) as ChatCompletionsBody;
   } catch (err) {
-    process.stderr.write(`Invalid JSON: ${(err as Error).message}\n`);
+    printError(formatJsonParseError(err));
     return 2;
   }
 
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
-    process.stderr.write("'messages' is required and must be a non-empty array.\n");
+    printError(formatMissingMessages());
     return 2;
   }
 
   const requestedModel = body.model ?? DEFAULT_MODEL;
   const { upstream, dropped } = chatCompletionsToUpstream(body);
   if (dropped.length > 0) {
-    process.stderr.write(`dropped unsupported fields: ${dropped.join(", ")}\n`);
+    process.stderr.write(`note: dropped unsupported fields: ${dropped.join(", ")}\n`);
   }
 
   let upstreamRes: Response;
@@ -54,16 +61,20 @@ export async function callCommand(arg: string | undefined): Promise<number> {
     upstreamRes = await postUpstream(upstream);
   } catch (err) {
     if (err instanceof NotAuthenticatedError) {
-      process.stderr.write(`${err.message}\n`);
+      printError(formatNotAuthenticated());
       return 3;
     }
-    process.stderr.write(`upstream fetch failed: ${(err as Error).message ?? String(err)}\n`);
+    if (err instanceof TypeError || (err as { code?: string })?.code === "ENOTFOUND") {
+      printError(formatNetworkError(err));
+      return 5;
+    }
+    printError(`upstream fetch failed: ${(err as Error).message ?? String(err)}`);
     return 4;
   }
 
   const result = await collectChatCompletion(upstreamRes, requestedModel);
   if ("error" in result) {
-    process.stderr.write(`upstream HTTP ${result.error.status}: ${result.error.message}\n`);
+    printError(formatApiError(result.error.status, result.error.message));
     return 4;
   }
 

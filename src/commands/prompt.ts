@@ -1,5 +1,13 @@
 import { runResponse, ApiError, type ReasoningEffort } from "../client/responses.js";
 import { NotAuthenticatedError } from "../auth/manager.js";
+import {
+  formatApiError,
+  formatMissingPrompt,
+  formatNetworkError,
+  formatNotAuthenticated,
+  formatStreamError,
+  printError,
+} from "../cli/help-errors.js";
 
 export interface PromptCmdOptions {
   prompt: string;
@@ -30,7 +38,7 @@ export async function promptCommand(opts: PromptCmdOptions): Promise<number> {
     prompt = prompt.length > 0 ? `${prompt}\n\n${piped}` : piped;
   }
   if (prompt.trim().length === 0) {
-    process.stderr.write("Error: prompt is empty. Pass a prompt as argument or pipe via stdin.\n");
+    printError(formatMissingPrompt());
     return 2;
   }
 
@@ -71,15 +79,23 @@ export async function promptCommand(opts: PromptCmdOptions): Promise<number> {
     return 0;
   } catch (err) {
     if (err instanceof NotAuthenticatedError) {
-      process.stderr.write(`${err.message}\n`);
+      printError(formatNotAuthenticated());
       return 3;
     }
     if (err instanceof ApiError) {
-      process.stderr.write(`API error (${err.status}): ${err.message}\n`);
-      if (err.detail) process.stderr.write(`${err.detail}\n`);
+      if (err.status === 0) {
+        // ApiError(status=0) is thrown for in-stream `response.failed`/`error`.
+        printError(formatStreamError(err.message));
+        return 4;
+      }
+      printError(formatApiError(err.status, err.detail ?? err.message));
       return 4;
     }
-    process.stderr.write(`${(err as Error).message ?? err}\n`);
+    if (err instanceof TypeError || (err as { code?: string })?.code === "ENOTFOUND") {
+      printError(formatNetworkError(err));
+      return 5;
+    }
+    printError(`${(err as Error).message ?? String(err)}`);
     return 1;
   }
 }

@@ -40,6 +40,8 @@ export async function main(): Promise<void> {
     )
     .version(VERSION, "-v, --version", "Show the version.")
     .helpOption("-h, --help", "Show this help.")
+    .showHelpAfterError("(run with --help for usage)")
+    .showSuggestionAfterError(true)
     .addHelpText(
       "after",
       `

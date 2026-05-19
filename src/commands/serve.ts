@@ -2,6 +2,7 @@ import http from "node:http";
 import { parseSse } from "../client/sse.js";
 import { postUpstream } from "../client/responses.js";
 import { NotAuthenticatedError } from "../auth/manager.js";
+import { readAuth } from "../auth/store.js";
 import {
   A2A_ROUTE_PATH,
   AGENT_CARD_PATH,
@@ -16,6 +17,7 @@ import {
   type ChatCompletionsBody,
   type CodexUsage,
 } from "../translate/chat-completions.js";
+import { formatNotAuthenticated, printError } from "../cli/help-errors.js";
 
 export interface ServeCmdOptions {
   port: number;
@@ -313,6 +315,15 @@ async function handleA2A(
 }
 
 export async function serveCommand(opts: ServeCmdOptions): Promise<number> {
+  const auth = await readAuth();
+  if (!auth) {
+    printError(formatNotAuthenticated());
+    process.stderr.write(
+      "\nThe server proxies requests using your local ChatGPT OAuth token, so it can't start without one.\n",
+    );
+    return 3;
+  }
+
   const server = http.createServer((req, res) => {
     if (req.method === "POST" && req.url === ROUTE_PATH) {
       handleChatCompletions(req, res).catch((err) => {

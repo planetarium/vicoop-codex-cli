@@ -1,10 +1,11 @@
 import { readAuth } from "../auth/store.js";
 import { decodeJwt, extractChatGptClaims } from "../auth/jwt.js";
+import { formatNotSignedInWhoami, printError } from "../cli/help-errors.js";
 
 export async function whoamiCommand(json: boolean): Promise<number> {
   const auth = await readAuth();
   if (!auth) {
-    process.stderr.write("Not signed in.\n");
+    printError(formatNotSignedInWhoami());
     return 1;
   }
   const payload = decodeJwt(auth.tokens.id_token);
