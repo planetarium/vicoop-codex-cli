@@ -1,0 +1,217 @@
+import { loadActiveAuth, forceRefresh, type ActiveAuth } from "../auth/manager.js";
+import { parseSse } from "./sse.js";
+
+const CHATGPT_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
+
+export type ReasoningEffort = "low" | "medium" | "high";
+
+export interface RunRequest {
+  /** Model identifier — e.g. "gpt-5.5", "gpt-5.3-codex". Defaults to "gpt-5.3-codex". */
+  model?: string;
+  /** Optional system-style instructions sent at the top of the request. */
+  instructions?: string;
+  /** The user's prompt text. */
+  prompt: string;
+  /** Reasoning effort. Defaults to "medium". Set to undefined to omit. */
+  reasoningEffort?: ReasoningEffort;
+  /** When false (default), the prompt is not stored on the server. */
+  store?: boolean;
+}
+
+export interface ResponseUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+}
+
+export interface StreamCallbacks {
+  /** Called for every text delta chunk. */
+  onTextDelta?: (delta: string) => void;
+  /** Called when the response is completed with usage info. */
+  onCompleted?: (info: { responseId?: string; usage?: ResponseUsage }) => void;
+  /** Called on any non-fatal stream event the client did not specifically handle. */
+  onEvent?: (event: { type: string; raw: unknown }) => void;
+}
+
+export interface RunResult {
+  text: string;
+  responseId?: string;
+  usage?: ResponseUsage;
+  model?: string;
+}
+
+const DEFAULT_INSTRUCTIONS = "You are a helpful assistant.";
+
+function buildBody(req: RunRequest): unknown {
+  const body: Record<string, unknown> = {
+    model: req.model ?? "gpt-5.3-codex",
+    instructions:
+      req.instructions && req.instructions.length > 0
+        ? req.instructions
+        : DEFAULT_INSTRUCTIONS,
+    input: [
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: req.prompt }],
+      },
+    ],
+    tools: [],
+    tool_choice: "auto",
+    parallel_tool_calls: false,
+    store: req.store ?? false,
+    stream: true,
+    include: [],
+  };
+  if (req.reasoningEffort !== undefined) {
+    body.reasoning = { effort: req.reasoningEffort };
+  }
+  return body;
+}
+
+function buildHeaders(auth: ActiveAuth): Headers {
+  const headers = new Headers({
+    Authorization: `Bearer ${auth.accessToken}`,
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
+    "OAI-Product-Sku": "codex",
+    "User-Agent": "vicoop-codex-cli/0.1.0",
+    originator: "codex_cli_rs",
+  });
+  if (auth.accountId) headers.set("ChatGPT-Account-ID", auth.accountId);
+  return headers;
+}
+
+async function postResponses(
+  auth: ActiveAuth,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return fetch(CHATGPT_RESPONSES_URL, {
+    method: "POST",
+    headers: buildHeaders(auth),
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
+export class ApiError extends Error {
+  status: number;
+  detail?: string;
+  constructor(status: number, message: string, detail?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+async function readErrorBody(res: Response): Promise<string> {
+  try {
+    return await res.text();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * POST raw body to the ChatGPT Codex backend with auth + one-shot refresh on 401.
+ * Returns the raw upstream Response without consuming its body.
+ */
+export async function postUpstream(
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<Response> {
+  let auth = await loadActiveAuth();
+  let res = await postResponses(auth, body, signal);
+  if (res.status === 401) {
+    try {
+      await res.body?.cancel();
+    } catch {
+      // ignore
+    }
+    auth = await forceRefresh();
+    res = await postResponses(auth, body, signal);
+  }
+  return res;
+}
+
+export async function runResponse(
+  req: RunRequest,
+  callbacks: StreamCallbacks = {},
+  signal?: AbortSignal,
+): Promise<RunResult> {
+  const body = buildBody(req);
+  const res = await postUpstream(body, signal);
+
+  if (!res.ok || !res.body) {
+    const detail = await readErrorBody(res);
+    throw new ApiError(
+      res.status,
+      `ChatGPT backend returned HTTP ${res.status}`,
+      detail.slice(0, 1000),
+    );
+  }
+
+  let text = "";
+  let responseId: string | undefined;
+  let usage: ResponseUsage | undefined;
+  const model = res.headers.get("openai-model") ?? undefined;
+
+  for await (const ev of parseSse(res.body)) {
+    if (!ev.data) continue;
+    if (ev.data === "[DONE]") continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(ev.data);
+    } catch {
+      callbacks.onEvent?.({ type: ev.event ?? "unknown", raw: ev.data });
+      continue;
+    }
+    const type =
+      (typeof parsed === "object" && parsed !== null && "type" in parsed
+        ? (parsed as { type?: unknown }).type
+        : undefined) ?? ev.event;
+
+    if (typeof type !== "string") {
+      callbacks.onEvent?.({ type: ev.event ?? "unknown", raw: parsed });
+      continue;
+    }
+
+    switch (type) {
+      case "response.output_text.delta": {
+        const delta = (parsed as { delta?: unknown }).delta;
+        if (typeof delta === "string") {
+          text += delta;
+          callbacks.onTextDelta?.(delta);
+        }
+        break;
+      }
+      case "response.completed": {
+        const resp = (parsed as { response?: { id?: string; usage?: ResponseUsage } }).response;
+        responseId = resp?.id ?? responseId;
+        usage = resp?.usage ?? usage;
+        callbacks.onCompleted?.({ responseId, usage });
+        break;
+      }
+      case "response.created": {
+        const resp = (parsed as { response?: { id?: string } }).response;
+        responseId = resp?.id ?? responseId;
+        callbacks.onEvent?.({ type, raw: parsed });
+        break;
+      }
+      case "response.failed":
+      case "error": {
+        const errObj = (parsed as { response?: { error?: { message?: string; code?: string } }; error?: { message?: string; code?: string } });
+        const inner = errObj.response?.error ?? errObj.error;
+        const message = inner?.message ?? "stream reported failure";
+        throw new ApiError(0, message, inner?.code);
+      }
+      default:
+        callbacks.onEvent?.({ type, raw: parsed });
+        break;
+    }
+  }
+
+  return { text, responseId, usage, model };
+}

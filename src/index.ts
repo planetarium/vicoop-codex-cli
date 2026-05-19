@@ -1,0 +1,141 @@
+import { Command, Option } from "commander";
+import { callCommand } from "./commands/call.js";
+import { loginCommand } from "./commands/login.js";
+import { logoutCommand } from "./commands/logout.js";
+import { promptCommand } from "./commands/prompt.js";
+import { serveCommand } from "./commands/serve.js";
+import { whoamiCommand } from "./commands/whoami.js";
+import type { ReasoningEffort } from "./client/responses.js";
+
+const VERSION = "0.1.0";
+
+interface PromptOptions {
+  model?: string;
+  instructions?: string;
+  reasoning?: ReasoningEffort;
+  stream: boolean;
+  json?: boolean;
+}
+
+interface LoginOptions {
+  browser: boolean;
+}
+
+interface WhoamiOptions {
+  json?: boolean;
+}
+
+interface ServeOptions {
+  port: string;
+  host: string;
+}
+
+export async function main(): Promise<void> {
+  const program = new Command();
+
+  program
+    .name("vicoop-codex")
+    .description(
+      "Lightweight Codex CLI that calls the ChatGPT LLM via your subscription.",
+    )
+    .version(VERSION, "-v, --version", "Show the version.")
+    .helpOption("-h, --help", "Show this help.")
+    .addHelpText(
+      "after",
+      `
+Environment:
+  VICOOP_CODEX_HOME           Override the credentials directory (default: ~/.vicoop-codex)
+
+Examples:
+  $ vicoop-codex prompt "Explain monads in one paragraph"
+  $ echo "summarize this file" | vicoop-codex prompt -m gpt-5
+  $ vicoop-codex prompt --json "give me a haiku" > out.json`,
+    );
+
+  program
+    .command("prompt [text...]")
+    .description("Send a one-shot prompt.")
+    .option("-m, --model <name>", "Model id (default: gpt-5.3-codex)")
+    .option("-i, --instructions <text>", "System-style instructions")
+    .addOption(
+      new Option(
+        "-r, --reasoning <effort>",
+        "Reasoning effort (default: medium server-side)",
+      ).choices(["low", "medium", "high"]),
+    )
+    .option("--no-stream", "Buffer the whole response, print at the end")
+    .option("--json", "Print JSON { text, response_id, usage, model }")
+    .action(async (text: string[] | undefined, options: PromptOptions) => {
+      const promptText = (text ?? []).join(" ");
+      const code = await promptCommand({
+        prompt: promptText,
+        model: options.model,
+        instructions: options.instructions,
+        reasoning: options.reasoning,
+        stream: options.stream,
+        json: options.json === true,
+      });
+      process.exit(code);
+    });
+
+  program
+    .command("login")
+    .description("Sign in to ChatGPT via OAuth (PKCE).")
+    .option("--no-browser", "Don't try to open a browser automatically")
+    .action(async (options: LoginOptions) => {
+      const code = await loginCommand({ noBrowser: !options.browser });
+      process.exit(code);
+    });
+
+  program
+    .command("logout")
+    .description("Remove the stored credentials.")
+    .action(async () => {
+      const code = await logoutCommand();
+      process.exit(code);
+    });
+
+  program
+    .command("whoami")
+    .description("Show the signed-in account.")
+    .option("--json", "Output as JSON")
+    .action(async (options: WhoamiOptions) => {
+      const code = await whoamiCommand(options.json === true);
+      process.exit(code);
+    });
+
+  program
+    .command("call [body]")
+    .description(
+      "Send a Chat Completions request body (JSON) through the same translation pipeline as the server and print the response JSON.",
+    )
+    .action(async (body: string | undefined) => {
+      const code = await callCommand(body);
+      process.exit(code);
+    });
+
+  program
+    .command("serve")
+    .description(
+      "Run a local HTTP server that exposes POST /v1/responses (OpenAI Responses API shape) backed by your ChatGPT OAuth.",
+    )
+    .option("-p, --port <n>", "Port to bind (default: 8787)", "8787")
+    .option("-H, --host <ip>", "Host/IP to bind (default: 127.0.0.1)", "127.0.0.1")
+    .action(async (options: ServeOptions) => {
+      const port = Number(options.port);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        process.stderr.write(`Invalid port: ${options.port}\n`);
+        process.exit(2);
+        return;
+      }
+      const code = await serveCommand({ port, host: options.host });
+      process.exit(code);
+    });
+
+  if (process.argv.length <= 2) {
+    program.outputHelp();
+    return;
+  }
+
+  await program.parseAsync(process.argv);
+}
