@@ -1,9 +1,10 @@
-import { BaseAgent, type AgentEvent, type InvocationContext } from "@a2x/sdk";
+import { BaseAgent, type AgentEvent, type InvocationContext, type Message } from "@a2x/sdk";
 import { postUpstream } from "../client/responses.js";
 import { parseSse } from "../client/sse.js";
-
-const DEFAULT_MODEL = "gpt-5.3-codex";
-const DEFAULT_INSTRUCTIONS = "You are a helpful assistant.";
+import {
+  chatCompletionsToUpstream,
+  type ChatCompletionsBody,
+} from "../translate/chat-completions.js";
 
 function findLatestUserText(events: AgentEvent[]): string {
   for (let i = events.length - 1; i >= 0; i--) {
@@ -13,24 +14,48 @@ function findLatestUserText(events: AgentEvent[]): string {
   return "";
 }
 
-function buildUpstreamBody(userText: string): Record<string, unknown> {
-  return {
-    model: DEFAULT_MODEL,
-    instructions: DEFAULT_INSTRUCTIONS,
-    input: [
-      {
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text: userText }],
-      },
-    ],
-    tools: [],
-    tool_choice: "auto",
-    parallel_tool_calls: false,
-    store: false,
-    stream: true,
-    include: [],
+/**
+ * Pull a Chat Completions body out of the A2A message metadata, if present.
+ *
+ * Convention: A2A clients put a complete OpenAI Chat Completions body
+ * (model / messages / tools / tool_choice / etc.) into `message.metadata`.
+ * The user's A2A `parts` text is then largely advisory — the actual
+ * request to the backend is whatever metadata says.
+ *
+ * The @a2x/sdk's Runner injects the raw `message` onto `InvocationContext`
+ * at runtime even though the TS type doesn't expose it, so we cast.
+ */
+function buildChatBody(ctx: InvocationContext): {
+  body: ChatCompletionsBody;
+  source: "metadata-full" | "metadata-partial" | "user-text";
+} {
+  const message = (ctx as InvocationContext & { message?: Message }).message;
+  const metadata = message?.metadata as ChatCompletionsBody | undefined;
+
+  // Case A: metadata carries a complete Chat Completions body (with messages array).
+  // Use it verbatim — the user-message text in `parts` is ignored.
+  if (metadata && Array.isArray(metadata.messages) && metadata.messages.length > 0) {
+    return { body: metadata, source: "metadata-full" };
+  }
+
+  // Case B: metadata is present but no messages array. Build a minimal body
+  // from the latest user-text event, and merge in any other top-level
+  // metadata fields (model, tools, reasoning_effort, etc.).
+  const userText = findLatestUserText(ctx.session.events ?? []);
+  const body: ChatCompletionsBody = {
+    messages: [{ role: "user", content: userText }],
   };
+
+  if (metadata && typeof metadata === "object") {
+    for (const k of Object.keys(metadata)) {
+      if (k === "messages") continue;
+      const v = (metadata as Record<string, unknown>)[k];
+      if (v !== undefined) (body as Record<string, unknown>)[k] = v;
+    }
+    return { body, source: "metadata-partial" };
+  }
+
+  return { body, source: "user-text" };
 }
 
 export class CodexAgent extends BaseAgent {
@@ -38,22 +63,33 @@ export class CodexAgent extends BaseAgent {
     super({
       name: "codex_vicoop_agent",
       description:
-        "Proxies A2A requests to the user's ChatGPT subscription via the ChatGPT Codex backend.",
+        "Proxies A2A requests to the user's ChatGPT subscription via the ChatGPT Codex backend. Pass a full Chat Completions body in Message.metadata to control model/tools/etc.",
     });
   }
 
   async *run(ctx: InvocationContext): AsyncGenerator<AgentEvent> {
-    const userText = findLatestUserText(ctx.session.events ?? []);
+    const { body, source } = buildChatBody(ctx);
+    const { upstream, dropped } = chatCompletionsToUpstream(body);
+
+    const stamp = new Date().toISOString();
+    process.stderr.write(`[${stamp}] a2a request (source=${source})\n`);
+    process.stderr.write(JSON.stringify(body, null, 2) + "\n");
+    if (dropped.length > 0) {
+      process.stderr.write(
+        `[${stamp}] a2a: dropped unsupported fields: ${dropped.join(", ")}\n`,
+      );
+    }
 
     let upstreamRes: Response;
     try {
-      upstreamRes = await postUpstream(buildUpstreamBody(userText), ctx.signal);
+      upstreamRes = await postUpstream(upstream, ctx.signal);
     } catch (err) {
       yield {
         type: "text",
         role: "agent",
         text: `[upstream error] ${(err as Error).message ?? String(err)}`,
       };
+      yield { type: "done" };
       return;
     }
 
@@ -67,6 +103,7 @@ export class CodexAgent extends BaseAgent {
         // not JSON
       }
       yield { type: "text", role: "agent", text: `[upstream error] ${message}` };
+      yield { type: "done" };
       return;
     }
 
