@@ -60,6 +60,7 @@ export const UPSTREAM_ACCEPTED_FIELDS = new Set([
   "store",
   "stream",
   "include",
+  "text",
 ]);
 
 export const CHAT_FIELDS_CONSUMED = new Set([
@@ -70,6 +71,7 @@ export const CHAT_FIELDS_CONSUMED = new Set([
   "tool_choice",
   "parallel_tool_calls",
   "reasoning_effort",
+  "response_format",
 ]);
 
 export function extractText(content: ChatMessage["content"]): string {
@@ -187,6 +189,16 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
 
   if (typeof body.reasoning_effort === "string") {
     candidate.reasoning = { effort: body.reasoning_effort };
+  }
+
+  const responseFormat = body.response_format;
+  if (responseFormat && typeof responseFormat === "object") {
+    const rf = responseFormat as { type?: string; json_schema?: Record<string, unknown> };
+    if (rf.type === "json_schema" && rf.json_schema && typeof rf.json_schema === "object") {
+      candidate.text = { format: { type: "json_schema", ...rf.json_schema } };
+    } else if (rf.type) {
+      candidate.text = { format: { ...rf } };
+    }
   }
 
   const upstream: Record<string, unknown> = {};
