@@ -92,8 +92,16 @@ export interface UpstreamBuildResult {
 export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBuildResult {
   const systemTexts: string[] = [];
   const inputItems: unknown[] = [];
+  const droppedContentTypes = new Set<string>();
 
   for (const msg of body.messages ?? []) {
+    if (Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (part && typeof part === "object" && typeof part.type === "string" && part.type !== "text") {
+          droppedContentTypes.add(part.type);
+        }
+      }
+    }
     const role = msg.role;
     if (role === "system" || role === "developer") {
       const t = extractText(msg.content);
@@ -190,6 +198,9 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
   for (const k of Object.keys(body)) {
     if (CHAT_FIELDS_CONSUMED.has(k)) continue;
     dropped.push(k);
+  }
+  if (droppedContentTypes.size > 0) {
+    dropped.push(`messages[].content[] non-text parts: ${[...droppedContentTypes].sort().join(", ")}`);
   }
 
   return { upstream, dropped };
