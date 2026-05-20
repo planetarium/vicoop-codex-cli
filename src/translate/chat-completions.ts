@@ -27,6 +27,7 @@ export interface ChatCompletionsBody {
   model?: string;
   messages?: ChatMessage[];
   stream?: boolean;
+  stream_options?: { include_usage?: boolean };
   tools?: Array<{ type?: string; function?: Record<string, unknown> }>;
   tool_choice?:
     | string
@@ -47,6 +48,23 @@ export interface CodexResponse {
   created_at?: number;
   model?: string;
   usage?: CodexUsage;
+  status?: string;
+  incomplete_details?: { reason?: string } | null;
+}
+
+export type ChatFinishReason = "stop" | "length" | "tool_calls" | "content_filter";
+
+export function determineFinishReason(
+  finalResponse: Pick<CodexResponse, "status" | "incomplete_details">,
+  hasToolCalls: boolean,
+): ChatFinishReason {
+  if (hasToolCalls) return "tool_calls";
+  if (finalResponse.status === "incomplete") {
+    const reason = finalResponse.incomplete_details?.reason;
+    if (reason === "max_output_tokens") return "length";
+    if (reason === "content_filter") return "content_filter";
+  }
+  return "stop";
 }
 
 export const UPSTREAM_ACCEPTED_FIELDS = new Set([
@@ -60,16 +78,19 @@ export const UPSTREAM_ACCEPTED_FIELDS = new Set([
   "store",
   "stream",
   "include",
+  "text",
 ]);
 
 export const CHAT_FIELDS_CONSUMED = new Set([
   "model",
   "messages",
   "stream",
+  "stream_options",
   "tools",
   "tool_choice",
   "parallel_tool_calls",
   "reasoning_effort",
+  "response_format",
 ]);
 
 export function extractText(content: ChatMessage["content"]): string {
@@ -92,8 +113,16 @@ export interface UpstreamBuildResult {
 export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBuildResult {
   const systemTexts: string[] = [];
   const inputItems: unknown[] = [];
+  const droppedContentTypes = new Set<string>();
 
   for (const msg of body.messages ?? []) {
+    if (Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (part && typeof part === "object" && typeof part.type === "string" && part.type !== "text") {
+          droppedContentTypes.add(part.type);
+        }
+      }
+    }
     const role = msg.role;
     if (role === "system" || role === "developer") {
       const t = extractText(msg.content);
@@ -149,12 +178,17 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
     return t;
   });
 
-  let toolChoice: unknown = body.tool_choice ?? "auto";
-  if (toolChoice && typeof toolChoice === "object") {
-    const tc = toolChoice as { type?: string; function?: { name?: string } };
-    if (tc.type === "function" && tc.function?.name) {
-      toolChoice = { type: "function", name: tc.function.name };
+  let toolChoice: unknown;
+  if (body.tool_choice !== undefined) {
+    toolChoice = body.tool_choice;
+    if (toolChoice && typeof toolChoice === "object") {
+      const tc = toolChoice as { type?: string; function?: { name?: string } };
+      if (tc.type === "function" && tc.function?.name) {
+        toolChoice = { type: "function", name: tc.function.name };
+      }
     }
+  } else {
+    toolChoice = tools.length > 0 ? "auto" : "none";
   }
 
   const candidate: Record<string, unknown> = {
@@ -163,14 +197,27 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
     input: inputItems,
     tools,
     tool_choice: toolChoice,
-    parallel_tool_calls: body.parallel_tool_calls ?? false,
     store: false,
     stream: true,
     include: [],
   };
 
+  if (typeof body.parallel_tool_calls === "boolean") {
+    candidate.parallel_tool_calls = body.parallel_tool_calls;
+  }
+
   if (typeof body.reasoning_effort === "string") {
     candidate.reasoning = { effort: body.reasoning_effort };
+  }
+
+  const responseFormat = body.response_format;
+  if (responseFormat && typeof responseFormat === "object") {
+    const rf = responseFormat as { type?: string; json_schema?: Record<string, unknown> };
+    if (rf.type === "json_schema" && rf.json_schema && typeof rf.json_schema === "object") {
+      candidate.text = { format: { type: "json_schema", ...rf.json_schema } };
+    } else if (rf.type) {
+      candidate.text = { format: { ...rf } };
+    }
   }
 
   const upstream: Record<string, unknown> = {};
@@ -182,6 +229,9 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
   for (const k of Object.keys(body)) {
     if (CHAT_FIELDS_CONSUMED.has(k)) continue;
     dropped.push(k);
+  }
+  if (droppedContentTypes.size > 0) {
+    dropped.push(`messages[].content[] non-text parts: ${[...droppedContentTypes].sort().join(", ")}`);
   }
 
   return { upstream, dropped };
@@ -246,7 +296,7 @@ export function buildChatCompletion(
   } else {
     message.content = content;
   }
-  const finishReason = toolCalls.length > 0 ? "tool_calls" : "stop";
+  const finishReason = determineFinishReason(finalResponse, toolCalls.length > 0);
   const usage = finalResponse.usage;
   return {
     id: makeChatId(finalResponse.id),

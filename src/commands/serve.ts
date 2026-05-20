@@ -1,4 +1,5 @@
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 import { parseSse } from "../client/sse.js";
 import { postUpstream } from "../client/responses.js";
 import { NotAuthenticatedError } from "../auth/manager.js";
@@ -13,8 +14,10 @@ import {
   DEFAULT_MODEL,
   chatCompletionsToUpstream,
   collectChatCompletion,
+  determineFinishReason,
   makeChatId,
   type ChatCompletionsBody,
+  type ChatFinishReason,
   type CodexUsage,
 } from "../translate/chat-completions.js";
 import { formatNotAuthenticated, printError } from "../cli/help-errors.js";
@@ -68,13 +71,17 @@ async function streamChatCompletion(
   upstreamBody: ReadableStream<Uint8Array>,
   res: http.ServerResponse,
   requestedModel: string,
+  includeUsage: boolean,
 ): Promise<void> {
   const created = Math.floor(Date.now() / 1000);
   let chatId: string | null = null;
   let model: string = requestedModel;
   let roleSent = false;
-  let finishReason: "stop" | "tool_calls" = "stop";
+  let hasToolCalls = false;
+  let toolCallIndex = 0;
   let finalUsage: CodexUsage | undefined;
+  let finalStatus: string | undefined;
+  let incompleteReason: string | undefined;
 
   const writeChunk = (delta: Record<string, unknown>, finish: string | null) => {
     if (res.writableEnded) return;
@@ -98,9 +105,21 @@ async function streamChatCompletion(
     }
     const obj = parsed as {
       type?: string;
-      response?: { id?: string; model?: string; usage?: CodexUsage };
+      response?: {
+        id?: string;
+        model?: string;
+        usage?: CodexUsage;
+        status?: string;
+        incomplete_details?: { reason?: string } | null;
+      };
       delta?: string;
-      item?: { type?: string };
+      item?: {
+        type?: string;
+        call_id?: string;
+        id?: string;
+        name?: string;
+        arguments?: string;
+      };
       error?: { message?: string };
     };
 
@@ -114,9 +133,28 @@ async function streamChatCompletion(
       }
       writeChunk({ content: obj.delta }, null);
     } else if (obj.type === "response.output_item.done" && obj.item?.type === "function_call") {
-      finishReason = "tool_calls";
+      hasToolCalls = true;
+      if (!roleSent) {
+        writeChunk({ role: "assistant", content: null }, null);
+        roleSent = true;
+      }
+      const toolCall = {
+        index: toolCallIndex++,
+        id:
+          obj.item.call_id ??
+          obj.item.id ??
+          `call_${randomUUID().replace(/-/g, "").slice(0, 16)}`,
+        type: "function",
+        function: {
+          name: obj.item.name ?? "",
+          arguments: obj.item.arguments ?? "",
+        },
+      };
+      writeChunk({ tool_calls: [toolCall] }, null);
     } else if (obj.type === "response.completed") {
       finalUsage = obj.response?.usage;
+      finalStatus = obj.response?.status;
+      incompleteReason = obj.response?.incomplete_details?.reason;
     } else if (obj.type === "response.failed" || obj.type === "error") {
       const msg = obj.error?.message ?? "upstream stream failed";
       logError(`stream ${obj.type}`, obj);
@@ -134,6 +172,10 @@ async function streamChatCompletion(
   if (!chatId) chatId = makeChatId();
   if (!roleSent) writeChunk({ role: "assistant", content: "" }, null);
 
+  const finishReason: ChatFinishReason = determineFinishReason(
+    { status: finalStatus, incomplete_details: { reason: incompleteReason } },
+    hasToolCalls,
+  );
   const finalChunk: Record<string, unknown> = {
     id: chatId,
     object: "chat.completion.chunk",
@@ -141,7 +183,7 @@ async function streamChatCompletion(
     model,
     choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
   };
-  if (finalUsage) {
+  if (finalUsage && includeUsage) {
     finalChunk.usage = {
       prompt_tokens: finalUsage.input_tokens ?? 0,
       completion_tokens: finalUsage.output_tokens ?? 0,
@@ -218,7 +260,8 @@ async function handleChatCompletions(
       "cache-control": "no-cache",
       connection: "keep-alive",
     });
-    await streamChatCompletion(upstreamRes.body, res, requestedModel);
+    const includeUsage = body.stream_options?.include_usage !== false;
+    await streamChatCompletion(upstreamRes.body, res, requestedModel, includeUsage);
     return;
   }
 
