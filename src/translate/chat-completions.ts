@@ -149,12 +149,17 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
     return t;
   });
 
-  let toolChoice: unknown = body.tool_choice ?? "auto";
-  if (toolChoice && typeof toolChoice === "object") {
-    const tc = toolChoice as { type?: string; function?: { name?: string } };
-    if (tc.type === "function" && tc.function?.name) {
-      toolChoice = { type: "function", name: tc.function.name };
+  let toolChoice: unknown;
+  if (body.tool_choice !== undefined) {
+    toolChoice = body.tool_choice;
+    if (toolChoice && typeof toolChoice === "object") {
+      const tc = toolChoice as { type?: string; function?: { name?: string } };
+      if (tc.type === "function" && tc.function?.name) {
+        toolChoice = { type: "function", name: tc.function.name };
+      }
     }
+  } else {
+    toolChoice = tools.length > 0 ? "auto" : "none";
   }
 
   const candidate: Record<string, unknown> = {
