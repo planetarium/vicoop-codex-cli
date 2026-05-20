@@ -17,9 +17,12 @@
 | `tools[].function.*` | flatten | `tools[]` (function 객체 평탄화) |
 | `tool_choice` (객체) | flatten | `tool_choice` (객체 평탄화) |
 | `tool_choice` (문자열) | passthrough | `tool_choice` |
-| `parallel_tool_calls` | passthrough | `parallel_tool_calls` |
+| `tool_choice` (누락) | derive | `tools`가 있으면 `"auto"`, 없으면 `"none"` |
+| `parallel_tool_calls` | passthrough (명시 시에만) | `parallel_tool_calls` |
 | `reasoning_effort` | wrap | `reasoning: { effort }` |
+| `response_format` | wrap | `text: { format }` (json_object / json_schema) |
 | `stream` | 클라이언트용으로만 사용 | (업스트림은 항상 `stream: true`) |
+| `stream_options.include_usage` | 클라이언트용으로만 사용 | (`false`면 스트리밍 마지막 청크의 usage 생략) |
 | — | 고정 | `store: false`, `include: []` |
 | 그 외 모든 필드 | **drop** | — |
 
@@ -86,7 +89,7 @@ OpenAI는 모든 컨텍스트를 하나의 `messages` 배열에 담지만, Codex
 | `user` | `input_text` |
 | `assistant` | `output_text` |
 
-`content`가 문자열이면 그대로, 멀티모달 배열(`[{type:"text", text}, {type:"image_url", ...}]`)이면 **`type:"text"` 파트만** 추출해서 합친다. 이미지/오디오 파트는 현재 무시.
+`content`가 문자열이면 그대로, 멀티모달 배열(`[{type:"text", text}, {type:"image_url", ...}]`)이면 **`type:"text"` 파트만** 추출해서 합친다. 이미지/오디오 같은 비-텍스트 파트는 현재 무시되며, **무시된 파트 타입은 `dropped` 목록에 `messages[].content[] non-text parts: image_url` 형태로 기록**되어 stderr 로그로 표시된다 (예: `dropped unsupported fields: messages[].content[] non-text parts: image_url`).
 
 ```jsonc
 // IN
@@ -170,7 +173,7 @@ Chat Completions 스키마와 Responses 스키마의 함수 정의 모양이 한
 
 ### `tool_choice` 평탄화
 
-문자열 형태(`"auto"`, `"required"`, `"none"`)는 그대로. 누락 시 `"auto"` 기본값.
+문자열 형태(`"auto"`, `"required"`, `"none"`)는 그대로. **누락 시 OpenAI 시맨틱을 따라 `tools`가 있으면 `"auto"`, 없으면 `"none"`을 적용** (이전엔 무조건 `"auto"`였음).
 
 객체로 특정 함수를 강제할 때만 평탄화:
 
@@ -181,6 +184,30 @@ Chat Completions 스키마와 Responses 스키마의 함수 정의 모양이 한
 // OUT
 { "tool_choice": { "type": "function", "name": "get_weather" } }
 ```
+
+### `parallel_tool_calls` 전달 정책
+
+**클라이언트가 명시한 경우에만 백엔드로 그대로 전달**. 누락 시에는 필드를 보내지 않음 → 백엔드 자체 디폴트 적용 (Responses API 기본은 모델별).
+
+이전 코드는 누락 시 `false`를 강제로 박았는데, 이게 OpenAI Chat Completions 디폴트(`true`)와 어긋나 멀티 도구 호출이 한 라운드에 묶이지 못하는 원인이었다.
+
+### `response_format` → `text.format`
+
+```jsonc
+// IN
+{ "response_format": { "type": "json_object" } }
+// OUT
+{ "text": { "format": { "type": "json_object" } } }
+
+// IN
+{ "response_format": { "type": "json_schema",
+   "json_schema": { "name": "Foo", "schema": {...}, "strict": true } } }
+// OUT
+{ "text": { "format": { "type": "json_schema",
+   "name": "Foo", "schema": {...}, "strict": true } } }
+```
+
+백엔드가 거절하면 클라이언트는 명시적 에러를 받게 됨 (silent하게 일반 텍스트가 돌아오지 않음).
 
 ### `reasoning_effort` → `reasoning.effort`
 
@@ -220,7 +247,6 @@ Chat Completions 스키마와 Responses 스키마의 함수 정의 모양이 한
 | `stop` | 동일. 출력 종료는 모델 결정 |
 | `n` | Responses API는 항상 단일 응답. `n > 1` 미지원 |
 | `logprobs`, `top_logprobs`, `logit_bias` | 백엔드 미지원 |
-| `response_format` | `text.format`으로 옮기는 변환 미구현 (TODO) |
 | `metadata` | 비공식 백엔드엔 별 의미 없음 |
 | `user` | 공식 `codex_cli_rs`도 안 보냄 |
 | `service_tier` | 백엔드가 자체 결정 (응답엔 들어옴, 요청은 무시) |
@@ -230,7 +256,7 @@ Chat Completions 스키마와 Responses 스키마의 함수 정의 모양이 한
 화이트리스트 정의:
 
 ```typescript
-// src/commands/serve.ts
+// src/translate/chat-completions.ts
 const UPSTREAM_ACCEPTED_FIELDS = new Set([
   "model",
   "instructions",
@@ -242,6 +268,7 @@ const UPSTREAM_ACCEPTED_FIELDS = new Set([
   "store",
   "stream",
   "include",
+  "text",
 ]);
 ```
 
