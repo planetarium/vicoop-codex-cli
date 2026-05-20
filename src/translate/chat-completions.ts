@@ -163,11 +163,14 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
     input: inputItems,
     tools,
     tool_choice: toolChoice,
-    parallel_tool_calls: body.parallel_tool_calls ?? false,
     store: false,
     stream: true,
     include: [],
   };
+
+  if (typeof body.parallel_tool_calls === "boolean") {
+    candidate.parallel_tool_calls = body.parallel_tool_calls;
+  }
 
   if (typeof body.reasoning_effort === "string") {
     candidate.reasoning = { effort: body.reasoning_effort };
