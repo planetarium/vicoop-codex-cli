@@ -1,4 +1,5 @@
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 import { parseSse } from "../client/sse.js";
 import { postUpstream } from "../client/responses.js";
 import { NotAuthenticatedError } from "../auth/manager.js";
@@ -76,6 +77,7 @@ async function streamChatCompletion(
   let model: string = requestedModel;
   let roleSent = false;
   let hasToolCalls = false;
+  let toolCallIndex = 0;
   let finalUsage: CodexUsage | undefined;
   let finalStatus: string | undefined;
   let incompleteReason: string | undefined;
@@ -110,7 +112,13 @@ async function streamChatCompletion(
         incomplete_details?: { reason?: string } | null;
       };
       delta?: string;
-      item?: { type?: string };
+      item?: {
+        type?: string;
+        call_id?: string;
+        id?: string;
+        name?: string;
+        arguments?: string;
+      };
       error?: { message?: string };
     };
 
@@ -125,6 +133,23 @@ async function streamChatCompletion(
       writeChunk({ content: obj.delta }, null);
     } else if (obj.type === "response.output_item.done" && obj.item?.type === "function_call") {
       hasToolCalls = true;
+      if (!roleSent) {
+        writeChunk({ role: "assistant", content: null }, null);
+        roleSent = true;
+      }
+      const toolCall = {
+        index: toolCallIndex++,
+        id:
+          obj.item.call_id ??
+          obj.item.id ??
+          `call_${randomUUID().replace(/-/g, "").slice(0, 16)}`,
+        type: "function",
+        function: {
+          name: obj.item.name ?? "",
+          arguments: obj.item.arguments ?? "",
+        },
+      };
+      writeChunk({ tool_calls: [toolCall] }, null);
     } else if (obj.type === "response.completed") {
       finalUsage = obj.response?.usage;
       finalStatus = obj.response?.status;
