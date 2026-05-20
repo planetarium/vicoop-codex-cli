@@ -27,6 +27,7 @@ export interface ChatCompletionsBody {
   model?: string;
   messages?: ChatMessage[];
   stream?: boolean;
+  stream_options?: { include_usage?: boolean };
   tools?: Array<{ type?: string; function?: Record<string, unknown> }>;
   tool_choice?:
     | string
@@ -84,6 +85,7 @@ export const CHAT_FIELDS_CONSUMED = new Set([
   "model",
   "messages",
   "stream",
+  "stream_options",
   "tools",
   "tool_choice",
   "parallel_tool_calls",

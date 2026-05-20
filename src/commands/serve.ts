@@ -71,6 +71,7 @@ async function streamChatCompletion(
   upstreamBody: ReadableStream<Uint8Array>,
   res: http.ServerResponse,
   requestedModel: string,
+  includeUsage: boolean,
 ): Promise<void> {
   const created = Math.floor(Date.now() / 1000);
   let chatId: string | null = null;
@@ -182,7 +183,7 @@ async function streamChatCompletion(
     model,
     choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
   };
-  if (finalUsage) {
+  if (finalUsage && includeUsage) {
     finalChunk.usage = {
       prompt_tokens: finalUsage.input_tokens ?? 0,
       completion_tokens: finalUsage.output_tokens ?? 0,
@@ -259,7 +260,8 @@ async function handleChatCompletions(
       "cache-control": "no-cache",
       connection: "keep-alive",
     });
-    await streamChatCompletion(upstreamRes.body, res, requestedModel);
+    const includeUsage = body.stream_options?.include_usage !== false;
+    await streamChatCompletion(upstreamRes.body, res, requestedModel, includeUsage);
     return;
   }
 
