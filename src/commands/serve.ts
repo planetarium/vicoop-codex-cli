@@ -13,8 +13,10 @@ import {
   DEFAULT_MODEL,
   chatCompletionsToUpstream,
   collectChatCompletion,
+  determineFinishReason,
   makeChatId,
   type ChatCompletionsBody,
+  type ChatFinishReason,
   type CodexUsage,
 } from "../translate/chat-completions.js";
 import { formatNotAuthenticated, printError } from "../cli/help-errors.js";
@@ -73,8 +75,10 @@ async function streamChatCompletion(
   let chatId: string | null = null;
   let model: string = requestedModel;
   let roleSent = false;
-  let finishReason: "stop" | "tool_calls" = "stop";
+  let hasToolCalls = false;
   let finalUsage: CodexUsage | undefined;
+  let finalStatus: string | undefined;
+  let incompleteReason: string | undefined;
 
   const writeChunk = (delta: Record<string, unknown>, finish: string | null) => {
     if (res.writableEnded) return;
@@ -98,7 +102,13 @@ async function streamChatCompletion(
     }
     const obj = parsed as {
       type?: string;
-      response?: { id?: string; model?: string; usage?: CodexUsage };
+      response?: {
+        id?: string;
+        model?: string;
+        usage?: CodexUsage;
+        status?: string;
+        incomplete_details?: { reason?: string } | null;
+      };
       delta?: string;
       item?: { type?: string };
       error?: { message?: string };
@@ -114,9 +124,11 @@ async function streamChatCompletion(
       }
       writeChunk({ content: obj.delta }, null);
     } else if (obj.type === "response.output_item.done" && obj.item?.type === "function_call") {
-      finishReason = "tool_calls";
+      hasToolCalls = true;
     } else if (obj.type === "response.completed") {
       finalUsage = obj.response?.usage;
+      finalStatus = obj.response?.status;
+      incompleteReason = obj.response?.incomplete_details?.reason;
     } else if (obj.type === "response.failed" || obj.type === "error") {
       const msg = obj.error?.message ?? "upstream stream failed";
       logError(`stream ${obj.type}`, obj);
@@ -134,6 +146,10 @@ async function streamChatCompletion(
   if (!chatId) chatId = makeChatId();
   if (!roleSent) writeChunk({ role: "assistant", content: "" }, null);
 
+  const finishReason: ChatFinishReason = determineFinishReason(
+    { status: finalStatus, incomplete_details: { reason: incompleteReason } },
+    hasToolCalls,
+  );
   const finalChunk: Record<string, unknown> = {
     id: chatId,
     object: "chat.completion.chunk",

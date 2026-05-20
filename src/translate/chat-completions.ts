@@ -47,6 +47,23 @@ export interface CodexResponse {
   created_at?: number;
   model?: string;
   usage?: CodexUsage;
+  status?: string;
+  incomplete_details?: { reason?: string } | null;
+}
+
+export type ChatFinishReason = "stop" | "length" | "tool_calls" | "content_filter";
+
+export function determineFinishReason(
+  finalResponse: Pick<CodexResponse, "status" | "incomplete_details">,
+  hasToolCalls: boolean,
+): ChatFinishReason {
+  if (hasToolCalls) return "tool_calls";
+  if (finalResponse.status === "incomplete") {
+    const reason = finalResponse.incomplete_details?.reason;
+    if (reason === "max_output_tokens") return "length";
+    if (reason === "content_filter") return "content_filter";
+  }
+  return "stop";
 }
 
 export const UPSTREAM_ACCEPTED_FIELDS = new Set([
@@ -277,7 +294,7 @@ export function buildChatCompletion(
   } else {
     message.content = content;
   }
-  const finishReason = toolCalls.length > 0 ? "tool_calls" : "stop";
+  const finishReason = determineFinishReason(finalResponse, toolCalls.length > 0);
   const usage = finalResponse.usage;
   return {
     id: makeChatId(finalResponse.id),
