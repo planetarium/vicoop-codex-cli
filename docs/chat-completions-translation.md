@@ -219,7 +219,7 @@ Chat Completions 스키마와 Responses 스키마의 함수 정의 모양이 한
 { "reasoning": { "effort": "high" } }
 ```
 
-값은 `"low" | "medium" | "high"` (백엔드가 `"xhigh"`도 지원하긴 함). `reasoning_effort` 미지정 시 `reasoning` 필드 자체를 안 보냄 → 백엔드가 모델 기본값 사용.
+값은 `"low" | "medium" | "high"` (백엔드가 `"xhigh"`도 지원하긴 함). **`reasoning_effort` 미지정 시 CLI가 `"medium"`을 주입**해서 항상 `reasoning: { effort }`가 upstream에 실림. 백엔드 자체 기본값은 `effort: "none"`이라 추론을 1-pass sampling으로만 수행 → 멀티스텝 도구 체인에서 다음 단계 호출을 누락하는 사례가 많아 medium으로 안전한 기본값을 깐다 (#2).
 
 ### 항상 고정되는 필드
 
