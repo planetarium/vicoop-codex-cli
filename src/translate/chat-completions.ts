@@ -206,9 +206,12 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
     candidate.parallel_tool_calls = body.parallel_tool_calls;
   }
 
-  if (typeof body.reasoning_effort === "string") {
-    candidate.reasoning = { effort: body.reasoning_effort };
-  }
+  candidate.reasoning = {
+    effort:
+      typeof body.reasoning_effort === "string"
+        ? body.reasoning_effort
+        : "medium",
+  };
 
   const responseFormat = body.response_format;
   if (responseFormat && typeof responseFormat === "object") {
