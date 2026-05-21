@@ -15,7 +15,7 @@ export interface CallbackServer {
   port: number;
   redirectUri: string;
   waitForCallback: (expectedState: string) => Promise<CallbackResult>;
-  close: () => void;
+  close: () => Promise<void>;
 }
 
 const SUCCESS_HTML = `<!doctype html>
@@ -151,12 +151,19 @@ export async function startCallbackServer(): Promise<CallbackServer> {
     port,
     redirectUri,
     waitForCallback,
-    close: () => {
-      try {
-        httpServer.close();
-      } catch {
-        // ignore
-      }
-    },
+    close: () =>
+      new Promise<void>((resolve) => {
+        try {
+          // Force keep-alive sockets to disconnect so close() can complete
+          // promptly. Without this, browsers holding a keep-alive connection
+          // delay shutdown and have triggered a libuv assertion on Windows
+          // (src\win\async.c) during process exit.
+          (httpServer as unknown as { closeAllConnections?: () => void })
+            .closeAllConnections?.();
+          httpServer.close(() => resolve());
+        } catch {
+          resolve();
+        }
+      }),
   };
 }

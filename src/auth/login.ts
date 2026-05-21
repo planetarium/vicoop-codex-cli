@@ -23,16 +23,19 @@ function buildAuthorizeUrl(opts: {
   authHost?: string;
 }): string {
   const base = opts.authHost ?? AUTHORIZE_URL;
+  const originator =
+    process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "codex_cli_rs";
   const params = new URLSearchParams({
     response_type: "code",
     client_id: CLIENT_ID,
     redirect_uri: opts.redirectUri,
     scope: SCOPES,
-    state: opts.state,
     code_challenge: opts.codeChallenge,
     code_challenge_method: "S256",
     id_token_add_organizations: "true",
     codex_cli_simplified_flow: "true",
+    state: opts.state,
+    originator,
   });
   return `${base}?${params.toString()}`;
 }
@@ -40,23 +43,20 @@ function buildAuthorizeUrl(opts: {
 async function openInBrowser(url: string): Promise<void> {
   const { spawn } = await import("node:child_process");
   const platform = process.platform;
-  let cmd: string;
-  let args: string[];
-  if (platform === "darwin") {
-    cmd = "open";
-    args = [url];
-  } else if (platform === "win32") {
-    cmd = "cmd";
-    args = ["/c", "start", "", url];
-  } else {
-    cmd = "xdg-open";
-    args = [url];
-  }
   try {
-    const child = spawn(cmd, args, { stdio: "ignore", detached: true });
-    child.on("error", () => {
-      // best-effort; user can still copy-paste the URL
-    });
+    if (platform === "win32") {
+      const child = spawn("cmd.exe", ["/c", `start "" "${url}"`], {
+        stdio: "ignore",
+        detached: true,
+        windowsVerbatimArguments: true,
+      });
+      child.on("error", () => {});
+      child.unref();
+      return;
+    }
+    const cmd = platform === "darwin" ? "open" : "xdg-open";
+    const child = spawn(cmd, [url], { stdio: "ignore", detached: true });
+    child.on("error", () => {});
     child.unref();
   } catch {
     // ignore — fall back to printing the URL
@@ -104,6 +104,6 @@ export async function runLogin(options: LoginOptions = {}): Promise<AuthFile> {
     process.stderr.write("Login successful.\n");
     return authFile;
   } finally {
-    server.close();
+    await server.close();
   }
 }
