@@ -2,6 +2,7 @@ import { Command, Option } from "commander";
 import { callCommand } from "./commands/call.js";
 import { loginCommand } from "./commands/login.js";
 import { logoutCommand } from "./commands/logout.js";
+import { modelsCommand } from "./commands/models.js";
 import { promptCommand } from "./commands/prompt.js";
 import { serveCommand } from "./commands/serve.js";
 import { whoamiCommand } from "./commands/whoami.js";
@@ -22,6 +23,10 @@ interface LoginOptions {
 }
 
 interface WhoamiOptions {
+  json?: boolean;
+}
+
+interface ModelsOptions {
   json?: boolean;
 }
 
@@ -103,6 +108,15 @@ Examples:
     .option("--json", "Output as JSON")
     .action(async (options: WhoamiOptions) => {
       const code = await whoamiCommand(options.json === true);
+      process.exit(code);
+    });
+
+  program
+    .command("models")
+    .description("List ChatGPT Codex backend models available to this account.")
+    .option("--json", "Output JSON { client_version, etag, models }")
+    .action(async (options: ModelsOptions) => {
+      const code = await modelsCommand({ json: options.json === true });
       process.exit(code);
     });
 
