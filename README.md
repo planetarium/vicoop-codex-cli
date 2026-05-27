@@ -68,6 +68,9 @@ vicoop-codex --no-stream "Give me a haiku"
 # Structured output for scripts
 vicoop-codex --json "List 3 advantages of TLA+" | jq -r .text
 
+# List currently advertised Codex backend models
+vicoop-codex models --json
+
 # Inspect the signed-in account
 vicoop-codex whoami
 
@@ -107,11 +110,14 @@ src/
 │  ├─ manager.ts       loadActiveAuth + forceRefresh (used by client)
 │  └─ store.ts         read/write/clear ~/.vicoop-codex/auth.json
 ├─ client/
+│  ├─ backend.ts       shared ChatGPT Codex backend fetch + auth refresh
+│  ├─ models.ts        GET /backend-api/codex/models + model list normalization
 │  ├─ sse.ts           minimal text/event-stream parser
 │  └─ responses.ts     POST /backend-api/codex/responses + stream parsing
 ├─ commands/
 │  ├─ login.ts         login subcommand
 │  ├─ logout.ts        logout subcommand
+│  ├─ models.ts        models subcommand
 │  ├─ whoami.ts        whoami subcommand
 │  └─ prompt.ts        default one-shot prompt subcommand
 └─ index.ts            argv parser + dispatcher (exported `main()`)
