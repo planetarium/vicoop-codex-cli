@@ -1,8 +1,9 @@
-import { forceRefresh, loadActiveAuth, type ActiveAuth } from "../auth/manager.js";
+import {
+  CODEX_BACKEND_CLIENT_VERSION,
+  fetchCodexBackend,
+} from "./backend.js";
 
-export const CODEX_BACKEND_CLIENT_VERSION = "0.133.0";
-
-const CHATGPT_CODEX_MODELS_URL = "https://chatgpt.com/backend-api/codex/models";
+export { CODEX_BACKEND_CLIENT_VERSION };
 
 export interface CodexModel {
   id: string;
@@ -25,27 +26,6 @@ interface RawCodexModel {
   slug?: unknown;
   name?: unknown;
   service_tiers?: unknown;
-}
-
-function buildHeaders(auth: ActiveAuth): Headers {
-  const headers = new Headers({
-    Authorization: `Bearer ${auth.accessToken}`,
-    Accept: "application/json",
-    "OAI-Product-Sku": "codex",
-    "User-Agent": "vicoop-codex-cli/0.1.0",
-    originator: "codex_cli_rs",
-  });
-  if (auth.accountId) headers.set("ChatGPT-Account-ID", auth.accountId);
-  return headers;
-}
-
-async function getModels(auth: ActiveAuth, clientVersion: string): Promise<Response> {
-  const url = new URL(CHATGPT_CODEX_MODELS_URL);
-  url.searchParams.set("client_version", clientVersion);
-  return fetch(url, {
-    method: "GET",
-    headers: buildHeaders(auth),
-  });
 }
 
 function normalizeModel(raw: RawCodexModel): CodexModel | null {
@@ -89,13 +69,15 @@ async function readModels(res: Response, clientVersion: string): Promise<CodexMo
 export async function fetchCodexModels(
   clientVersion = CODEX_BACKEND_CLIENT_VERSION,
 ): Promise<CodexModelsResult> {
-  let auth = await loadActiveAuth();
-  let res = await getModels(auth, clientVersion);
-  if (res.status === 401) {
-    await res.body?.cancel().catch(() => undefined);
-    auth = await forceRefresh();
-    res = await getModels(auth, clientVersion);
-  }
+  const query = new URLSearchParams({ client_version: clientVersion });
+  const res = await fetchCodexBackend(
+    "/models",
+    {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    },
+    query,
+  );
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");

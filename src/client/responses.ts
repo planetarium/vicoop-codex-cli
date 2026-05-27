@@ -1,7 +1,5 @@
-import { loadActiveAuth, forceRefresh, type ActiveAuth } from "../auth/manager.js";
+import { fetchCodexBackend } from "./backend.js";
 import { parseSse } from "./sse.js";
-
-const CHATGPT_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 
 export type ReasoningEffort = "low" | "medium" | "high";
 
@@ -69,32 +67,6 @@ function buildBody(req: RunRequest): unknown {
   return body;
 }
 
-function buildHeaders(auth: ActiveAuth): Headers {
-  const headers = new Headers({
-    Authorization: `Bearer ${auth.accessToken}`,
-    "Content-Type": "application/json",
-    Accept: "text/event-stream",
-    "OAI-Product-Sku": "codex",
-    "User-Agent": "vicoop-codex-cli/0.1.0",
-    originator: "codex_cli_rs",
-  });
-  if (auth.accountId) headers.set("ChatGPT-Account-ID", auth.accountId);
-  return headers;
-}
-
-async function postResponses(
-  auth: ActiveAuth,
-  body: unknown,
-  signal?: AbortSignal,
-): Promise<Response> {
-  return fetch(CHATGPT_RESPONSES_URL, {
-    method: "POST",
-    headers: buildHeaders(auth),
-    body: JSON.stringify(body),
-    signal,
-  });
-}
-
 export class ApiError extends Error {
   status: number;
   detail?: string;
@@ -122,18 +94,15 @@ export async function postUpstream(
   body: unknown,
   signal?: AbortSignal,
 ): Promise<Response> {
-  let auth = await loadActiveAuth();
-  let res = await postResponses(auth, body, signal);
-  if (res.status === 401) {
-    try {
-      await res.body?.cancel();
-    } catch {
-      // ignore
-    }
-    auth = await forceRefresh();
-    res = await postResponses(auth, body, signal);
-  }
-  return res;
+  return fetchCodexBackend("/responses", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
 }
 
 export async function runResponse(

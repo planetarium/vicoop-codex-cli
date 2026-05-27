@@ -110,6 +110,7 @@ src/
 │  ├─ manager.ts       loadActiveAuth + forceRefresh (used by client)
 │  └─ store.ts         read/write/clear ~/.vicoop-codex/auth.json
 ├─ client/
+│  ├─ backend.ts       shared ChatGPT Codex backend fetch + auth refresh
 │  ├─ models.ts        GET /backend-api/codex/models + model list normalization
 │  ├─ sse.ts           minimal text/event-stream parser
 │  └─ responses.ts     POST /backend-api/codex/responses + stream parsing
