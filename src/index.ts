@@ -135,11 +135,11 @@ Examples:
     .description(
       "Run a local HTTP server that exposes POST /v1/responses (OpenAI Responses API shape) backed by your ChatGPT OAuth.",
     )
-    .option("-p, --port <n>", "Port to bind (default: 8787)", "8787")
+    .option("-p, --port <n>", "Port to bind (0 = random ephemeral; default: 8787)", "8787")
     .option("-H, --host <ip>", "Host/IP to bind (default: 127.0.0.1)", "127.0.0.1")
     .action(async (options: ServeOptions) => {
       const port = Number(options.port);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      if (!Number.isInteger(port) || port < 0 || port > 65535) {
         process.stderr.write(`Invalid port: ${options.port}\n`);
         process.exit(2);
         return;

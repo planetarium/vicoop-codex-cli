@@ -404,7 +404,18 @@ export async function serveCommand(opts: ServeCmdOptions): Promise<number> {
     });
   });
 
-  const base = `http://${opts.host}:${opts.port}`;
+  const address = server.address();
+  const boundPort =
+    address !== null && typeof address === "object" ? address.port : opts.port;
+  const base = `http://${opts.host}:${boundPort}`;
+  process.stderr.write(
+    JSON.stringify({
+      event: "listening",
+      host: opts.host,
+      port: boundPort,
+      url: base,
+    }) + "\n",
+  );
   process.stderr.write(
     `vicoop-codex serve listening on:\n` +
       `  POST ${base}${ROUTE_PATH}        (OpenAI Chat Completions)\n` +
