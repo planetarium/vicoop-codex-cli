@@ -21,15 +21,15 @@ if (!version || !/^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)*$/.test(version)) {
 // 1) src/index.ts — the value reported by `--version`.
 const indexPath = new URL("../src/index.ts", import.meta.url);
 const index = readFileSync(indexPath, "utf8");
-const nextIndex = index.replace(
-  /const VERSION = "[^"]*";/,
-  `const VERSION = "${version}";`,
-);
-if (nextIndex === index) {
+const versionRe = /const VERSION = "[^"]*";/;
+// Fail fast if the constant is missing — but check existence separately from
+// whether the value changed, since injecting the same version is a valid no-op
+// (e.g. tagging v0.1.0 when src already reads "0.1.0").
+if (!versionRe.test(index)) {
   console.error("inject-version: VERSION constant not found in src/index.ts");
   process.exit(1);
 }
-writeFileSync(indexPath, nextIndex);
+writeFileSync(indexPath, index.replace(versionRe, `const VERSION = "${version}";`));
 
 // 2) package.json — keep the manifest version in sync.
 const pkgPath = new URL("../package.json", import.meta.url);
