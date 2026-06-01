@@ -23,7 +23,32 @@ This project is a stripped-down, language-ported reimplementation of the OAuth +
 - Node.js **20+** (uses the built-in `fetch` and `ReadableStream`).
 - A ChatGPT account on a plan that grants Codex access (Plus / Pro / Team / Enterprise / Edu).
 
-## Install
+## Download (prebuilt binaries)
+
+Each release ships standalone, single-file executables — no Node.js install
+required. Grab one from the [Releases page](https://github.com/planetarium/vicoop-codex-cli/releases/latest):
+
+| Platform | Asset |
+| --- | --- |
+| Windows (x64) | `vicoop-codex-<version>-windows-x64.exe` |
+| macOS (Apple Silicon) | `vicoop-codex-<version>-macos-arm64` |
+| Linux (x64) | `vicoop-codex-<version>-linux-x64` |
+| Linux (arm64) | `vicoop-codex-<version>-linux-arm64` |
+
+`SHA256SUMS.txt` is attached to each release for verification.
+
+```bash
+# macOS / Linux
+curl -fsSL -o vicoop-codex \
+  https://github.com/planetarium/vicoop-codex-cli/releases/latest/download/vicoop-codex-<version>-macos-arm64
+chmod +x vicoop-codex
+./vicoop-codex --version
+```
+
+> macOS may quarantine the downloaded binary (it is not notarized). If Gatekeeper
+> blocks it, run `xattr -d com.apple.quarantine ./vicoop-codex` once.
+
+## Install (from source)
 
 ```bash
 cd vicoop-codex-cli
@@ -124,6 +149,37 @@ src/
 ```
 
 Zero runtime dependencies — only `typescript` and `@types/node` at build time.
+
+## Releasing
+
+Releases are **tag-driven** and fully automated by
+[`.github/workflows/release.yml`](.github/workflows/release.yml). Pushing a
+semver tag (`v*`) to GitHub triggers a build that cross-compiles four standalone
+binaries with [Bun](https://bun.sh) (`--compile`) and publishes a GitHub Release
+for that tag with the binaries + `SHA256SUMS.txt` attached.
+
+To cut a release:
+
+```bash
+# Option A: let npm bump package.json and create the tag for you
+npm version patch          # or: minor | major  (creates vX.Y.Z tag)
+git push && git push --tags
+
+# Option B: tag by hand
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The pushed tag is the source of truth for the version: `release.yml` strips the
+leading `v` and injects it into `package.json` and `src/index.ts` (via
+[`scripts/inject-version.mjs`](scripts/inject-version.mjs)) before building, so
+the binary's `--version` matches the tag. Tags containing a pre-release suffix
+(e.g. `v1.2.3-rc.1`) are published as GitHub pre-releases.
+
+Build targets: `windows-x64` (.exe), `macos-arm64`, `linux-x64`, `linux-arm64`.
+
+Merges to `main` do **not** release; they only run the build/type-check gate in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## License
 

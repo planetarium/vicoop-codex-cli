@@ -1,0 +1,114 @@
+name: release
+
+# Tag-driven release. Push a semver tag to cut a release:
+#
+#   npm version patch            # bumps package.json + creates the vX.Y.Z tag
+#   git push && git push --tags  # push main + the tag
+#
+# …or tag by hand:
+#
+#   git tag v1.2.3 && git push origin v1.2.3
+#
+# The tag is the source of truth for the released version: it is injected into
+# the sources, four standalone binaries are cross-compiled with Bun, and a
+# GitHub Release is created for the tag with the binaries + checksums attached.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build binaries & publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Derive version from tag
+        id: version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${REF_NAME#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)*$ ]]; then
+            echo "::error::Tag '$REF_NAME' is not a valid semver tag (expected vX.Y.Z)."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Prerelease iff there is a '-' suffix BEFORE any '+build' metadata
+          # (semver: 1.2.3-rc.1 is a prerelease; 1.2.3+build-9 is not).
+          if [[ "${VERSION%%+*}" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Releasing version $VERSION (tag $REF_NAME)"
+
+      - name: Inject version into sources
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/inject-version.mjs "$VERSION"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (tsc)
+        run: npm run build
+
+      - name: Compile standalone binaries
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          # Cross-compile each target (Bun) into a named release artifact.
+          compile() {
+            target="$1"; out="release/$2"
+            echo "::group::compile $target -> $out"
+            bun build ./bin/vicoop-codex.js --compile --target="$target" --outfile="$out"
+            echo "::endgroup::"
+          }
+          compile bun-windows-x64  "vicoop-codex-${VERSION}-windows-x64.exe"
+          compile bun-darwin-arm64 "vicoop-codex-${VERSION}-macos-arm64"
+          compile bun-linux-x64    "vicoop-codex-${VERSION}-linux-x64"
+          compile bun-linux-arm64  "vicoop-codex-${VERSION}-linux-arm64"
+          ls -lh release
+
+      - name: Generate checksums
+        working-directory: release
+        run: |
+          set -euo pipefail
+          sha256sum vicoop-codex-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: vicoop-codex ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
+          fail_on_unmatched_files: true
+          files: |
+            release/vicoop-codex-*
+            release/SHA256SUMS.txt
