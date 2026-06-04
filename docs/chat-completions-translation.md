@@ -58,7 +58,7 @@ Client (OpenAI SDK / curl / IDE 플러그인)
 
 ### `model`
 
-그대로 전달. 누락 시 기본값 `gpt-5.3-codex`. 백엔드의 `/codex/models` 응답에 있는 슬러그만 허용 (`gpt-5.5`, `gpt-5.3-codex` 등). 모르는 슬러그는 백엔드가 400으로 거절한다.
+그대로 전달. **필수 — 기본값 없음.** 누락하면 호출 경로에서 거절하며(serve `400`, call exit 2, a2a 에러 이벤트), 에러 메시지에 `/codex/models`로 조회한 현재 사용 가능한 슬러그 목록을 함께 안내한다. 백엔드의 `/codex/models` 응답에 있는 슬러그만 허용 (`gpt-5.5`, `gpt-5.4` 등). 모르는 슬러그는 백엔드가 400으로 거절한다.
 
 ### `messages` → `instructions` + `input`
 
@@ -280,7 +280,7 @@ const UPSTREAM_ACCEPTED_FIELDS = new Set([
 
 ```jsonc
 {
-  "model": "gpt-5.3-codex",
+  "model": "gpt-5.5",
   "messages": [
     { "role": "system", "content": "Helpful Assistant" },
     { "role": "user",   "content": "현재 디렉토리에 무슨 파일있니" }
@@ -305,7 +305,7 @@ const UPSTREAM_ACCEPTED_FIELDS = new Set([
 
 ```jsonc
 {
-  "model": "gpt-5.3-codex",
+  "model": "gpt-5.5",
   "instructions": "Helpful Assistant",
   "input": [
     {

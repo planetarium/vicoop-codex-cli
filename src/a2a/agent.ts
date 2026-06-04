@@ -1,6 +1,8 @@
 import { BaseAgent, type AgentEvent, type InvocationContext, type Message } from "@a2x/sdk";
 import { postUpstream } from "../client/responses.js";
 import { parseSse } from "../client/sse.js";
+import { tryListModelIds } from "../client/models.js";
+import { missingModelMessage } from "../cli/help-errors.js";
 import {
   chatCompletionsToUpstream,
   type ChatCompletionsBody,
@@ -63,12 +65,27 @@ export class CodexAgent extends BaseAgent {
     super({
       name: "codex_vicoop_agent",
       description:
-        "Proxies A2A requests to the user's ChatGPT subscription via the ChatGPT Codex backend. Pass a full Chat Completions body in Message.metadata to control model/tools/etc.",
+        "Proxies A2A requests to the user's ChatGPT subscription via the ChatGPT Codex backend. Pass a full Chat Completions body in Message.metadata to control model/tools/etc. A 'model' is required (no default).",
     });
   }
 
   async *run(ctx: InvocationContext): AsyncGenerator<AgentEvent> {
     const { body, source } = buildChatBody(ctx);
+
+    const requestedModel =
+      typeof body.model === "string" ? body.model.trim() : undefined;
+    if (!requestedModel) {
+      const models = await tryListModelIds();
+      yield {
+        type: "text",
+        role: "agent",
+        text: `[error] ${missingModelMessage(models)}`,
+      };
+      yield { type: "done" };
+      return;
+    }
+    body.model = requestedModel;
+
     const { upstream, dropped } = chatCompletionsToUpstream(body);
 
     const stamp = new Date().toISOString();

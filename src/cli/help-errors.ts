@@ -31,7 +31,7 @@ export function formatMissingPrompt(): string {
     `  $ echo "summarize this file" | ${BIN} prompt`,
     "",
     "With options:",
-    `  $ ${BIN} prompt -m gpt-5.3-codex -r high "explain monads"`,
+    `  $ ${BIN} prompt -m gpt-5.5 -r high "explain monads"`,
     `  $ ${BIN} prompt -i "Reply in Korean only." "지구의 둘레는?"`,
   ].join("\n");
 }
@@ -53,7 +53,7 @@ export function formatJsonParseError(err: unknown): string {
     "",
     "Example of a valid request body:",
     "  {",
-    '    "model": "gpt-5.3-codex",',
+    '    "model": "gpt-5.5",',
     '    "messages": [',
     '      { "role": "user", "content": "hello" }',
     "    ]",
@@ -118,11 +118,11 @@ export function formatApiError(status: number, detail: string | undefined): stri
       "Check your plan first:",
       `  $ ${BIN} whoami      # look at the "plan:" line — needs plus / pro / team / enterprise`,
       "",
-      "If the plan is fine, try a valid model slug (current set, may change over time):",
-      "  -m gpt-5.5   -m gpt-5.4   -m gpt-5.4-mini   -m gpt-5.3-codex   -m gpt-5.2",
+      "If the plan is fine, list the models your account can use and pass one explicitly:",
+      `  $ ${BIN} models           # shows the current, live set of model slugs`,
       "",
       `Example:`,
-      `  $ ${BIN} prompt -m gpt-5.3-codex "hi"`,
+      `  $ ${BIN} prompt -m gpt-5.5 "hi"`,
       "",
       `Raw response: ${raw}`,
     ].join("\n");
@@ -232,6 +232,54 @@ export function formatStreamError(message: string): string {
     "This is usually a transient backend issue. Retry the request.",
     "If it keeps happening on the same prompt, try with a smaller / simpler prompt to isolate.",
   ].join("\n");
+}
+
+/**
+ * One-line description of the models a caller may choose from.
+ * `models` is the live set fetched from the backend, or null if that lookup
+ * failed (e.g. not signed in / offline) — in which case we point at `models`.
+ */
+export function describeAvailableModels(models: string[] | null): string {
+  if (models && models.length > 0) {
+    return `Available models for your account: ${models.join(", ")}`;
+  }
+  return `Run \`${BIN} models\` to list the models available to your account.`;
+}
+
+/** `prompt` rejected because no `-m/--model` was given (there is no default). */
+export function formatMissingModelPrompt(models: string[] | null): string {
+  return [
+    "No model specified — '-m/--model' is required (there is no built-in default).",
+    "",
+    describeAvailableModels(models),
+    "",
+    "Specify one explicitly:",
+    `  $ ${BIN} prompt -m <model> "your question"`,
+  ].join("\n");
+}
+
+/** `call` rejected because the request body had no `model` (there is no default). */
+export function formatMissingModelBody(models: string[] | null): string {
+  return [
+    "No model specified — the request body's 'model' field is required (there is no default).",
+    "",
+    describeAvailableModels(models),
+    "",
+    'Add a "model" field to the body:',
+    `  $ ${BIN} call '{"model":"<model>","messages":[{"role":"user","content":"hi"}]}'`,
+  ].join("\n");
+}
+
+/**
+ * Single-line variant for transport surfaces (serve HTTP 400, A2A error event)
+ * where the message is embedded in a JSON body or a text event.
+ */
+export function missingModelMessage(models: string[] | null): string {
+  const base = "'model' is required (there is no default).";
+  if (models && models.length > 0) {
+    return `${base} Available models: ${models.join(", ")}`;
+  }
+  return `${base} List available models via the backend /models endpoint.`;
 }
 
 /**

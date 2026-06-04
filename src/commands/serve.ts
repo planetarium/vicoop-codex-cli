@@ -11,7 +11,6 @@ import {
 } from "../a2a/agent-card.js";
 import { getA2ABundle } from "../a2a/handler.js";
 import {
-  DEFAULT_MODEL,
   chatCompletionsToUpstream,
   collectChatCompletion,
   determineFinishReason,
@@ -20,7 +19,12 @@ import {
   type ChatFinishReason,
   type CodexUsage,
 } from "../translate/chat-completions.js";
-import { formatNotAuthenticated, printError } from "../cli/help-errors.js";
+import { tryListModelIds } from "../client/models.js";
+import {
+  formatNotAuthenticated,
+  missingModelMessage,
+  printError,
+} from "../cli/help-errors.js";
 
 export interface ServeCmdOptions {
   port: number;
@@ -218,8 +222,16 @@ async function handleChatCompletions(
     return;
   }
 
+  const requestedModel =
+    typeof body.model === "string" ? body.model.trim() : undefined;
+  if (!requestedModel) {
+    logError("'model' missing or not a string", body);
+    writeJsonError(res, 400, missingModelMessage(await tryListModelIds()), "invalid_request_error");
+    return;
+  }
+  body.model = requestedModel;
+
   const clientWantsStream = body.stream === true;
-  const requestedModel = body.model ?? DEFAULT_MODEL;
   const { upstream: upstreamBody, dropped } = chatCompletionsToUpstream(body);
   if (dropped.length > 0) {
     process.stderr.write(

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { parseSse } from "../client/sse.js";
 
-export const DEFAULT_MODEL = "gpt-5.3-codex";
 export const DEFAULT_INSTRUCTIONS = "You are a helpful assistant.";
 
 export interface ChatMessagePart {
@@ -192,7 +191,10 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
   }
 
   const candidate: Record<string, unknown> = {
-    model: body.model ?? DEFAULT_MODEL,
+    // No default: callers must validate `model` before reaching here. When it
+    // is absent the key serializes away and the backend rejects with a clear
+    // "model is required" error rather than silently using a stale slug.
+    model: body.model,
     instructions: systemTexts.length > 0 ? systemTexts.join("\n\n") : DEFAULT_INSTRUCTIONS,
     input: inputItems,
     tools,

@@ -54,15 +54,16 @@ Environment:
   VICOOP_CODEX_HOME           Override the credentials directory (default: ~/.vicoop-codex)
 
 Examples:
-  $ vicoop-codex prompt "Explain monads in one paragraph"
-  $ echo "summarize this file" | vicoop-codex prompt -m gpt-5
-  $ vicoop-codex prompt --json "give me a haiku" > out.json`,
+  $ vicoop-codex models                                  # list models you can use
+  $ vicoop-codex prompt -m gpt-5.5 "Explain monads in one paragraph"
+  $ echo "summarize this file" | vicoop-codex prompt -m gpt-5.5
+  $ vicoop-codex prompt -m gpt-5.5 --json "give me a haiku" > out.json`,
     );
 
   program
     .command("prompt [text...]")
     .description("Send a one-shot prompt.")
-    .option("-m, --model <name>", "Model id (default: gpt-5.3-codex)")
+    .option("-m, --model <name>", "Model id (required — run `vicoop-codex models` to list)")
     .option("-i, --instructions <text>", "System-style instructions")
     .addOption(
       new Option(
