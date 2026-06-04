@@ -39,7 +39,7 @@ export function getA2ABundle(baseUrl: string): A2ABundle {
     .addSkill({
       id: "general-chat",
       name: "General Chat",
-      description: "General-purpose conversation backed by ChatGPT (gpt-5.3-codex by default).",
+      description: "General-purpose conversation backed by ChatGPT (default model resolved from the account's first supported model).",
       tags: ["chat", "general", "codex", "chatgpt"],
     })
     .setProvider({

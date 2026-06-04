@@ -1,5 +1,6 @@
 import { BaseAgent, type AgentEvent, type InvocationContext, type Message } from "@a2x/sdk";
 import { postUpstream } from "../client/responses.js";
+import { resolveDefaultModel } from "../client/models.js";
 import { parseSse } from "../client/sse.js";
 import {
   chatCompletionsToUpstream,
@@ -69,6 +70,21 @@ export class CodexAgent extends BaseAgent {
 
   async *run(ctx: InvocationContext): AsyncGenerator<AgentEvent> {
     const { body, source } = buildChatBody(ctx);
+
+    if (!body.model) {
+      try {
+        body.model = await resolveDefaultModel();
+      } catch (err) {
+        yield {
+          type: "text",
+          role: "agent",
+          text: `[upstream error] ${(err as Error).message ?? String(err)}`,
+        };
+        yield { type: "done" };
+        return;
+      }
+    }
+
     const { upstream, dropped } = chatCompletionsToUpstream(body);
 
     const stamp = new Date().toISOString();

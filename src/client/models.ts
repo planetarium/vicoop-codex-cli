@@ -66,6 +66,34 @@ async function readModels(res: Response, clientVersion: string): Promise<CodexMo
   };
 }
 
+const DEFAULT_MODEL_TTL_MS = 5 * 60 * 1000;
+
+let cachedDefaultModel: { id: string; expiresAt: number } | null = null;
+
+/**
+ * Resolve the default model dynamically by querying the supported models and
+ * returning the first one. The server's default occasionally disappears, so we
+ * avoid hardcoding it. Cached for {@link DEFAULT_MODEL_TTL_MS} so long-running
+ * processes (e.g. `serve`) pick up changes without restarting while still
+ * avoiding a `/models` round trip on every request. Throws if no models are
+ * available rather than falling back to a stale constant.
+ */
+export async function resolveDefaultModel(): Promise<string> {
+  const now = Date.now();
+  if (cachedDefaultModel && cachedDefaultModel.expiresAt > now) {
+    return cachedDefaultModel.id;
+  }
+  const { models } = await fetchCodexModels();
+  const first = models[0]?.id;
+  if (!first) {
+    throw new Error(
+      "ChatGPT Codex models endpoint returned no usable models; cannot resolve a default model",
+    );
+  }
+  cachedDefaultModel = { id: first, expiresAt: now + DEFAULT_MODEL_TTL_MS };
+  return first;
+}
+
 export async function fetchCodexModels(
   clientVersion = CODEX_BACKEND_CLIENT_VERSION,
 ): Promise<CodexModelsResult> {

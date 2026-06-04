@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { parseSse } from "../client/sse.js";
 
-export const DEFAULT_MODEL = "gpt-5.3-codex";
 export const DEFAULT_INSTRUCTIONS = "You are a helpful assistant.";
 
 export interface ChatMessagePart {
@@ -192,7 +191,9 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
   }
 
   const candidate: Record<string, unknown> = {
-    model: body.model ?? DEFAULT_MODEL,
+    // Callers resolve the default model (see resolveDefaultModel) before
+    // building the upstream body; body.model is expected to be set here.
+    model: body.model,
     instructions: systemTexts.length > 0 ? systemTexts.join("\n\n") : DEFAULT_INSTRUCTIONS,
     input: inputItems,
     tools,

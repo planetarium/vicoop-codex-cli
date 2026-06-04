@@ -2,6 +2,7 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { parseSse } from "../client/sse.js";
 import { postUpstream } from "../client/responses.js";
+import { resolveDefaultModel } from "../client/models.js";
 import { NotAuthenticatedError } from "../auth/manager.js";
 import { readAuth } from "../auth/store.js";
 import {
@@ -11,7 +12,6 @@ import {
 } from "../a2a/agent-card.js";
 import { getA2ABundle } from "../a2a/handler.js";
 import {
-  DEFAULT_MODEL,
   chatCompletionsToUpstream,
   collectChatCompletion,
   determineFinishReason,
@@ -219,16 +219,21 @@ async function handleChatCompletions(
   }
 
   const clientWantsStream = body.stream === true;
-  const requestedModel = body.model ?? DEFAULT_MODEL;
-  const { upstream: upstreamBody, dropped } = chatCompletionsToUpstream(body);
-  if (dropped.length > 0) {
-    process.stderr.write(
-      `[${new Date().toISOString()}] dropped unsupported fields: ${dropped.join(", ")}\n`,
-    );
-  }
 
+  let requestedModel: string;
+  let upstreamBody: Record<string, unknown>;
   let upstreamRes: Response;
   try {
+    requestedModel = body.model ?? (await resolveDefaultModel());
+    body.model = requestedModel;
+    const built = chatCompletionsToUpstream(body);
+    upstreamBody = built.upstream;
+    const dropped = built.dropped;
+    if (dropped.length > 0) {
+      process.stderr.write(
+        `[${new Date().toISOString()}] dropped unsupported fields: ${dropped.join(", ")}\n`,
+      );
+    }
     upstreamRes = await postUpstream(upstreamBody);
   } catch (err) {
     if (err instanceof NotAuthenticatedError) {

@@ -1,7 +1,7 @@
 import { postUpstream } from "../client/responses.js";
+import { resolveDefaultModel } from "../client/models.js";
 import { NotAuthenticatedError } from "../auth/manager.js";
 import {
-  DEFAULT_MODEL,
   chatCompletionsToUpstream,
   collectChatCompletion,
   type ChatCompletionsBody,
@@ -50,14 +50,15 @@ export async function callCommand(arg: string | undefined): Promise<number> {
     return 2;
   }
 
-  const requestedModel = body.model ?? DEFAULT_MODEL;
-  const { upstream, dropped } = chatCompletionsToUpstream(body);
-  if (dropped.length > 0) {
-    process.stderr.write(`note: dropped unsupported fields: ${dropped.join(", ")}\n`);
-  }
-
+  let requestedModel: string;
   let upstreamRes: Response;
   try {
+    requestedModel = body.model ?? (await resolveDefaultModel());
+    body.model = requestedModel;
+    const { upstream, dropped } = chatCompletionsToUpstream(body);
+    if (dropped.length > 0) {
+      process.stderr.write(`note: dropped unsupported fields: ${dropped.join(", ")}\n`);
+    }
     upstreamRes = await postUpstream(upstream);
   } catch (err) {
     if (err instanceof NotAuthenticatedError) {

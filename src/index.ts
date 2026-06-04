@@ -62,7 +62,7 @@ Examples:
   program
     .command("prompt [text...]")
     .description("Send a one-shot prompt.")
-    .option("-m, --model <name>", "Model id (default: gpt-5.3-codex)")
+    .option("-m, --model <name>", "Model id (default: first model listed by `vicoop-codex models`)")
     .option("-i, --instructions <text>", "System-style instructions")
     .addOption(
       new Option(

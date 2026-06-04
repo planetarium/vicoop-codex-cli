@@ -1,10 +1,14 @@
 import { fetchCodexBackend } from "./backend.js";
+import { resolveDefaultModel } from "./models.js";
 import { parseSse } from "./sse.js";
 
 export type ReasoningEffort = "low" | "medium" | "high";
 
 export interface RunRequest {
-  /** Model identifier — e.g. "gpt-5.5", "gpt-5.3-codex". Defaults to "gpt-5.3-codex". */
+  /**
+   * Model identifier — e.g. "gpt-5.5", "gpt-5.3-codex". When omitted, the
+   * default is resolved at request time from the first supported model.
+   */
   model?: string;
   /** Optional system-style instructions sent at the top of the request. */
   instructions?: string;
@@ -42,7 +46,7 @@ const DEFAULT_INSTRUCTIONS = "You are a helpful assistant.";
 
 function buildBody(req: RunRequest): unknown {
   const body: Record<string, unknown> = {
-    model: req.model ?? "gpt-5.3-codex",
+    model: req.model,
     instructions:
       req.instructions && req.instructions.length > 0
         ? req.instructions
@@ -110,7 +114,8 @@ export async function runResponse(
   callbacks: StreamCallbacks = {},
   signal?: AbortSignal,
 ): Promise<RunResult> {
-  const body = buildBody(req);
+  const resolvedModel = req.model ?? (await resolveDefaultModel());
+  const body = buildBody({ ...req, model: resolvedModel });
   const res = await postUpstream(body, signal);
 
   if (!res.ok || !res.body) {
