@@ -1,7 +1,7 @@
 import { postUpstream } from "../client/responses.js";
 import { NotAuthenticatedError } from "../auth/manager.js";
+import { tryListModelIds } from "../client/models.js";
 import {
-  DEFAULT_MODEL,
   chatCompletionsToUpstream,
   collectChatCompletion,
   type ChatCompletionsBody,
@@ -10,6 +10,7 @@ import {
   formatApiError,
   formatJsonParseError,
   formatMissingMessages,
+  formatMissingModelBody,
   formatNetworkError,
   formatNoBody,
   formatNotAuthenticated,
@@ -50,7 +51,13 @@ export async function callCommand(arg: string | undefined): Promise<number> {
     return 2;
   }
 
-  const requestedModel = body.model ?? DEFAULT_MODEL;
+  const requestedModel =
+    typeof body.model === "string" ? body.model.trim() : undefined;
+  if (!requestedModel) {
+    printError(formatMissingModelBody(await tryListModelIds()));
+    return 2;
+  }
+  body.model = requestedModel;
   const { upstream, dropped } = chatCompletionsToUpstream(body);
   if (dropped.length > 0) {
     process.stderr.write(`note: dropped unsupported fields: ${dropped.join(", ")}\n`);

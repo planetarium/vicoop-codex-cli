@@ -1,7 +1,9 @@
 import { runResponse, ApiError, type ReasoningEffort } from "../client/responses.js";
 import { NotAuthenticatedError } from "../auth/manager.js";
+import { tryListModelIds } from "../client/models.js";
 import {
   formatApiError,
+  formatMissingModelPrompt,
   formatMissingPrompt,
   formatNetworkError,
   formatNotAuthenticated,
@@ -42,11 +44,17 @@ export async function promptCommand(opts: PromptCmdOptions): Promise<number> {
     return 2;
   }
 
+  const model = opts.model?.trim();
+  if (!model) {
+    printError(formatMissingModelPrompt(await tryListModelIds()));
+    return 2;
+  }
+
   try {
     const result = await runResponse(
       {
         prompt,
-        model: opts.model,
+        model,
         instructions: opts.instructions,
         reasoningEffort: opts.reasoning,
       },

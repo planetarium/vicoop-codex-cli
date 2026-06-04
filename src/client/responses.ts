@@ -4,8 +4,12 @@ import { parseSse } from "./sse.js";
 export type ReasoningEffort = "low" | "medium" | "high";
 
 export interface RunRequest {
-  /** Model identifier — e.g. "gpt-5.5", "gpt-5.3-codex". Defaults to "gpt-5.3-codex". */
-  model?: string;
+  /**
+   * Model identifier — e.g. "gpt-5.5". Required: there is no default and the
+   * backend rejects requests without a valid model. Callers must validate this
+   * before invoking; run `vicoop-codex models` to list available slugs.
+   */
+  model: string;
   /** Optional system-style instructions sent at the top of the request. */
   instructions?: string;
   /** The user's prompt text. */
@@ -42,7 +46,7 @@ const DEFAULT_INSTRUCTIONS = "You are a helpful assistant.";
 
 function buildBody(req: RunRequest): unknown {
   const body: Record<string, unknown> = {
-    model: req.model ?? "gpt-5.3-codex",
+    model: req.model,
     instructions:
       req.instructions && req.instructions.length > 0
         ? req.instructions

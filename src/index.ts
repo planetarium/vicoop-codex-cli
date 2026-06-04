@@ -33,6 +33,7 @@ interface ModelsOptions {
 interface ServeOptions {
   port: string;
   host: string;
+  defaultModel?: string;
 }
 
 export async function main(): Promise<void> {
@@ -54,15 +55,16 @@ Environment:
   VICOOP_CODEX_HOME           Override the credentials directory (default: ~/.vicoop-codex)
 
 Examples:
-  $ vicoop-codex prompt "Explain monads in one paragraph"
-  $ echo "summarize this file" | vicoop-codex prompt -m gpt-5
-  $ vicoop-codex prompt --json "give me a haiku" > out.json`,
+  $ vicoop-codex models                                  # list models you can use
+  $ vicoop-codex prompt -m gpt-5.5 "Explain monads in one paragraph"
+  $ echo "summarize this file" | vicoop-codex prompt -m gpt-5.5
+  $ vicoop-codex prompt -m gpt-5.5 --json "give me a haiku" > out.json`,
     );
 
   program
     .command("prompt [text...]")
     .description("Send a one-shot prompt.")
-    .option("-m, --model <name>", "Model id (default: gpt-5.3-codex)")
+    .option("-m, --model <name>", "Model id (required — run `vicoop-codex models` to list)")
     .option("-i, --instructions <text>", "System-style instructions")
     .addOption(
       new Option(
@@ -133,10 +135,14 @@ Examples:
   program
     .command("serve")
     .description(
-      "Run a local HTTP server that exposes POST /v1/responses (OpenAI Responses API shape) backed by your ChatGPT OAuth.",
+      "Run a local HTTP server that exposes POST /v1/chat/completions (OpenAI Chat Completions shape) and an A2A endpoint, backed by your ChatGPT OAuth.",
     )
     .option("-p, --port <n>", "Port to bind (0 = random ephemeral; default: 8787)", "8787")
     .option("-H, --host <ip>", "Host/IP to bind (default: 127.0.0.1)", "127.0.0.1")
+    .option(
+      "-d, --default-model <name>",
+      "Model for requests that omit one. Validated at startup; self-heals to a live model if unset/unavailable.",
+    )
     .action(async (options: ServeOptions) => {
       const port = Number(options.port);
       if (!Number.isInteger(port) || port < 0 || port > 65535) {
@@ -144,7 +150,11 @@ Examples:
         process.exit(2);
         return;
       }
-      const code = await serveCommand({ port, host: options.host });
+      const code = await serveCommand({
+        port,
+        host: options.host,
+        defaultModel: options.defaultModel,
+      });
       process.exit(code);
     });
 

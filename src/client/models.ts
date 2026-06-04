@@ -88,3 +88,18 @@ export async function fetchCodexModels(
 
   return readModels(res, clientVersion);
 }
+
+/**
+ * Best-effort fetch of the available model ids, for use in error messages when
+ * a caller omits the (now-required) model. Never throws — returns null on any
+ * failure (not signed in, offline, backend error) so the error path is robust.
+ */
+export async function tryListModelIds(): Promise<string[] | null> {
+  try {
+    const result = await fetchCodexModels();
+    const ids = result.models.map((m) => m.id).filter((id) => id.length > 0);
+    return ids.length > 0 ? ids : null;
+  } catch {
+    return null;
+  }
+}
