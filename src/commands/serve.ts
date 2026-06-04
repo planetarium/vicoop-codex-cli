@@ -491,10 +491,16 @@ export async function serveCommand(opts: ServeCmdOptions): Promise<number> {
         `(first of: ${startupModels.join(", ")})\n`,
     );
   } else {
-    process.stderr.write(
-      `[warn] could not auto-select a default model at startup (model list unavailable); ` +
-        `will resolve it on the first model-less request.\n`,
+    // Hard guarantee: a running server always has a default model. If none can
+    // be resolved at startup (empty/unavailable model list and no
+    // --default-model), refuse to start rather than serving with an unset
+    // default. The bridge client surfaces this as serve_unavailable and can
+    // retry once the backend recovers.
+    printError(
+      "Could not resolve a default model at startup — the backend model list was empty or unavailable.\n\n" +
+        "serve requires a usable default model. Check that you're signed in and online, or pass --default-model <id> explicitly.",
     );
+    return 4;
   }
 
   const server = http.createServer((req, res) => {
@@ -553,7 +559,7 @@ export async function serveCommand(opts: ServeCmdOptions): Promise<number> {
       `  GET  ${base}${AGENT_CARD_PATH_ALT}  (A2A Agent Card — alt path)\n` +
       `  POST ${base}${A2A_ROUTE_PATH}        (A2A JSON-RPC, @a2x/sdk)\n` +
       `Backed by your local ChatGPT OAuth token.\n` +
-      `Default model (for requests that omit one; may self-heal): ${getDefaultModel() ?? "(unresolved — will resolve on first model-less request)"}\n`,
+      `Default model (for requests that omit one; may self-heal if retired): ${getDefaultModel() ?? "(unset)"}\n`,
   );
 
   return await new Promise<number>((resolve) => {
