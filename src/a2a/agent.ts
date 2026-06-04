@@ -1,7 +1,7 @@
 import { BaseAgent, type AgentEvent, type InvocationContext, type Message } from "@a2x/sdk";
 import { postUpstream } from "../client/responses.js";
 import { parseSse } from "../client/sse.js";
-import { tryListModelIds } from "../client/models.js";
+import { getDefaultModel, resolveDefaultModel } from "../client/default-model.js";
 import { missingModelMessage } from "../cli/help-errors.js";
 import {
   chatCompletionsToUpstream,
@@ -65,24 +65,33 @@ export class CodexAgent extends BaseAgent {
     super({
       name: "codex_vicoop_agent",
       description:
-        "Proxies A2A requests to the user's ChatGPT subscription via the ChatGPT Codex backend. Pass a full Chat Completions body in Message.metadata to control model/tools/etc. A 'model' is required (no default).",
+        "Proxies A2A requests to the user's ChatGPT subscription via the ChatGPT Codex backend. Pass a full Chat Completions body in Message.metadata to control model/tools/etc. 'model' falls back to the server's default model when omitted.",
     });
   }
 
   async *run(ctx: InvocationContext): AsyncGenerator<AgentEvent> {
     const { body, source } = buildChatBody(ctx);
 
-    const requestedModel =
-      typeof body.model === "string" ? body.model.trim() : undefined;
+    let requestedModel = typeof body.model === "string" ? body.model.trim() : "";
     if (!requestedModel) {
-      const models = await tryListModelIds();
-      yield {
-        type: "text",
-        role: "agent",
-        text: `[error] ${missingModelMessage(models)}`,
-      };
-      yield { type: "done" };
-      return;
+      // Honor the serve-level default model (shared with the chat-completions
+      // surface), resolving it on the fly if it isn't set yet. Note: unlike the
+      // chat-completions path, the A2A path does not retry on a stale default —
+      // a backend rejection surfaces as an error event.
+      requestedModel = getDefaultModel() ?? "";
+      if (!requestedModel) {
+        const resolved = await resolveDefaultModel("a2a: no default model set");
+        requestedModel = resolved.model ?? "";
+        if (!requestedModel) {
+          yield {
+            type: "text",
+            role: "agent",
+            text: `[error] ${missingModelMessage(resolved.ids)}`,
+          };
+          yield { type: "done" };
+          return;
+        }
+      }
     }
     body.model = requestedModel;
 
