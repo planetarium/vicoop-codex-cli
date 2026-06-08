@@ -40,6 +40,37 @@ export interface CodexUsage {
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
+  // Responses-API detail breakdowns. Forwarded verbatim — we deliberately
+  // do NOT enumerate the inner fields (cached_tokens, reasoning_tokens,
+  // audio_tokens, …) so any breakdown OpenAI reports rides through without
+  // a code change.
+  input_tokens_details?: Record<string, unknown>;
+  output_tokens_details?: Record<string, unknown>;
+}
+
+// Map a Responses-API usage block to the OpenAI Chat Completions usage shape.
+// The three scalar counts are renamed (input→prompt, output→completion); the
+// `*_tokens_details` breakdowns are passed through verbatim under their
+// Chat-Completions key names (`prompt_tokens_details` /
+// `completion_tokens_details`) so every sub-field OpenAI surfaces — cached
+// prompt tokens, reasoning tokens, and anything added later — reaches the
+// caller untouched. Returns the zero-filled scalar block when `usage` is
+// absent, matching the prior always-emit-usage behaviour.
+export function toChatCompletionUsage(
+  usage: CodexUsage | undefined,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    prompt_tokens: usage?.input_tokens ?? 0,
+    completion_tokens: usage?.output_tokens ?? 0,
+    total_tokens: usage?.total_tokens ?? 0,
+  };
+  if (usage?.input_tokens_details && typeof usage.input_tokens_details === "object") {
+    out.prompt_tokens_details = usage.input_tokens_details;
+  }
+  if (usage?.output_tokens_details && typeof usage.output_tokens_details === "object") {
+    out.completion_tokens_details = usage.output_tokens_details;
+  }
+  return out;
 }
 
 export interface CodexResponse {
@@ -312,11 +343,7 @@ export function buildChatCompletion(
         : Math.floor(Date.now() / 1000),
     model: finalResponse.model ?? requestedModel,
     choices: [{ index: 0, message, finish_reason: finishReason }],
-    usage: {
-      prompt_tokens: usage?.input_tokens ?? 0,
-      completion_tokens: usage?.output_tokens ?? 0,
-      total_tokens: usage?.total_tokens ?? 0,
-    },
+    usage: toChatCompletionUsage(usage),
   };
 }
 
