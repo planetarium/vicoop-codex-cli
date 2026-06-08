@@ -26,7 +26,39 @@ This project is a stripped-down, language-ported reimplementation of the OAuth +
 ## Download (prebuilt binaries)
 
 Each release ships standalone, single-file executables — no Node.js install
-required. Grab one from the [Releases page](https://github.com/planetarium/vicoop-codex-cli/releases/latest):
+required.
+
+**macOS / Linux** — one-liner that detects your platform, resolves the latest
+version, verifies the SHA256 checksum, and installs `vicoop-codex`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/planetarium/vicoop-codex-cli/main/scripts/install.sh | sh
+```
+
+The installer drops the binary in `/usr/local/bin` (or `$HOME/.local/bin` if
+that isn't writable). Override either choice with environment variables:
+
+```bash
+# pin a version and/or pick the install directory
+curl -fsSL https://raw.githubusercontent.com/planetarium/vicoop-codex-cli/main/scripts/install.sh \
+  | VERSION=0.2.1 INSTALL_DIR=~/bin sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+$repo = "planetarium/vicoop-codex-cli"
+$ver  = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest").tag_name.TrimStart("v")
+Invoke-WebRequest "https://github.com/$repo/releases/latest/download/vicoop-codex-$ver-windows-x64.exe" -OutFile vicoop-codex.exe
+.\vicoop-codex.exe --version
+```
+
+> macOS may quarantine the downloaded binary (it is not notarized). If Gatekeeper
+> blocks it, run `xattr -d com.apple.quarantine ./vicoop-codex` once.
+
+Prefer to grab a file by hand? Every release on the
+[Releases page](https://github.com/planetarium/vicoop-codex-cli/releases/latest)
+attaches these assets plus a `SHA256SUMS.txt`:
 
 | Platform | Asset |
 | --- | --- |
@@ -35,18 +67,8 @@ required. Grab one from the [Releases page](https://github.com/planetarium/vicoo
 | Linux (x64) | `vicoop-codex-<version>-linux-x64` |
 | Linux (arm64) | `vicoop-codex-<version>-linux-arm64` |
 
-`SHA256SUMS.txt` is attached to each release for verification.
-
-```bash
-# macOS / Linux
-curl -fsSL -o vicoop-codex \
-  https://github.com/planetarium/vicoop-codex-cli/releases/latest/download/vicoop-codex-<version>-macos-arm64
-chmod +x vicoop-codex
-./vicoop-codex --version
-```
-
-> macOS may quarantine the downloaded binary (it is not notarized). If Gatekeeper
-> blocks it, run `xattr -d com.apple.quarantine ./vicoop-codex` once.
+Once installed, keep it current with the built-in updater — `vicoop-codex upgrade`
+(see [Upgrading](#upgrading)).
 
 ## Install (from source)
 
@@ -101,7 +123,29 @@ vicoop-codex whoami
 
 # Sign out
 vicoop-codex logout
+
+# Update the standalone binary in place (checks GitHub Releases, verifies SHA256)
+vicoop-codex upgrade
+
+# Just check whether a newer version exists, without installing
+vicoop-codex upgrade --check
 ```
+
+### Upgrading
+
+The prebuilt standalone binaries can update themselves:
+
+```bash
+vicoop-codex upgrade          # download the latest release and replace this binary
+vicoop-codex upgrade --check  # report whether a newer version exists, then exit
+vicoop-codex upgrade --force  # re-download even if already up to date
+```
+
+`upgrade` queries the [latest GitHub Release](https://github.com/planetarium/vicoop-codex-cli/releases/latest),
+picks the asset matching your platform, verifies it against `SHA256SUMS.txt`,
+and atomically replaces the running executable. It only self-updates the
+standalone binaries — if you installed from source or via npm, it prints the
+right `git pull` / `npm install -g` command instead.
 
 ## How auth works
 
@@ -144,6 +188,7 @@ src/
 │  ├─ logout.ts        logout subcommand
 │  ├─ models.ts        models subcommand
 │  ├─ whoami.ts        whoami subcommand
+│  ├─ upgrade.ts       self-update from GitHub Releases (verifies SHA256)
 │  └─ prompt.ts        default one-shot prompt subcommand
 └─ index.ts            argv parser + dispatcher (exported `main()`)
 ```

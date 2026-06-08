@@ -5,10 +5,11 @@ import { logoutCommand } from "./commands/logout.js";
 import { modelsCommand } from "./commands/models.js";
 import { promptCommand } from "./commands/prompt.js";
 import { serveCommand } from "./commands/serve.js";
+import { upgradeCommand } from "./commands/upgrade.js";
 import { whoamiCommand } from "./commands/whoami.js";
 import type { ReasoningEffort } from "./client/responses.js";
 
-const VERSION = "0.1.0";
+export const VERSION = "0.1.0";
 
 interface PromptOptions {
   model?: string;
@@ -34,6 +35,11 @@ interface ServeOptions {
   port: string;
   host: string;
   defaultModel?: string;
+}
+
+interface UpgradeOptions {
+  check?: boolean;
+  force?: boolean;
 }
 
 export async function main(): Promise<void> {
@@ -154,6 +160,21 @@ Examples:
         port,
         host: options.host,
         defaultModel: options.defaultModel,
+      });
+      process.exit(code);
+    });
+
+  program
+    .command("upgrade")
+    .description(
+      "Self-update the standalone binary to the latest GitHub release (verifies SHA256).",
+    )
+    .option("--check", "Only report whether a newer version is available; don't install")
+    .option("--force", "Re-download and reinstall even if already up to date")
+    .action(async (options: UpgradeOptions) => {
+      const code = await upgradeCommand({
+        check: options.check === true,
+        force: options.force === true,
       });
       process.exit(code);
     });
