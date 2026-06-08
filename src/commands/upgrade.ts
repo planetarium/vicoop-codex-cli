@@ -134,9 +134,15 @@ export async function upgradeCommand(opts: UpgradeCmdOptions): Promise<number> {
   }
 
   if (opts.check) {
+    // Reachable with `--force` even when already current, so report the actual
+    // comparison rather than unconditionally claiming a newer version exists.
     process.stdout.write(
-      `A newer version is available: ${VERSION} → ${latest}\n` +
-        `Run \`vicoop-codex upgrade\` to install it.\n`,
+      cmp > 0
+        ? `A newer version is available: ${VERSION} → ${latest}\n` +
+            `Run \`vicoop-codex upgrade\` to install it.\n`
+        : cmp === 0
+          ? `Already on the latest version (${VERSION}).\n`
+          : `Current version (${VERSION}) is newer than the latest release (${latest}).\n`,
     );
     return 0;
   }
