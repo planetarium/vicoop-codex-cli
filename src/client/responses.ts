@@ -24,6 +24,12 @@ export interface ResponseUsage {
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
+  // Responses-API detail breakdowns, forwarded verbatim by `runResponse`
+  // (we assign `resp.usage` whole). Modelled as open records so any sub-field
+  // OpenAI reports (cached_tokens, reasoning_tokens, audio_tokens, …) is
+  // typed-visible and passes through without a code change.
+  input_tokens_details?: Record<string, unknown>;
+  output_tokens_details?: Record<string, unknown>;
 }
 
 export interface StreamCallbacks {

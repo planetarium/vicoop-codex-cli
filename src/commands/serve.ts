@@ -15,6 +15,7 @@ import {
   collectChatCompletion,
   determineFinishReason,
   makeChatId,
+  toChatCompletionUsage,
   type ChatCompletionsBody,
   type ChatFinishReason,
   type CodexUsage,
@@ -196,11 +197,7 @@ async function streamChatCompletion(
     choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
   };
   if (finalUsage && includeUsage) {
-    finalChunk.usage = {
-      prompt_tokens: finalUsage.input_tokens ?? 0,
-      completion_tokens: finalUsage.output_tokens ?? 0,
-      total_tokens: finalUsage.total_tokens ?? 0,
-    };
+    finalChunk.usage = toChatCompletionUsage(finalUsage);
   }
   res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
   res.write("data: [DONE]\n\n");
