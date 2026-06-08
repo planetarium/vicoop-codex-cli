@@ -101,7 +101,29 @@ vicoop-codex whoami
 
 # Sign out
 vicoop-codex logout
+
+# Update the standalone binary in place (checks GitHub Releases, verifies SHA256)
+vicoop-codex upgrade
+
+# Just check whether a newer version exists, without installing
+vicoop-codex upgrade --check
 ```
+
+### Upgrading
+
+The prebuilt standalone binaries can update themselves:
+
+```bash
+vicoop-codex upgrade          # download the latest release and replace this binary
+vicoop-codex upgrade --check  # report whether a newer version exists, then exit
+vicoop-codex upgrade --force  # re-download even if already up to date
+```
+
+`upgrade` queries the [latest GitHub Release](https://github.com/planetarium/vicoop-codex-cli/releases/latest),
+picks the asset matching your platform, verifies it against `SHA256SUMS.txt`,
+and atomically replaces the running executable. It only self-updates the
+standalone binaries — if you installed from source or via npm, it prints the
+right `git pull` / `npm install -g` command instead.
 
 ## How auth works
 
@@ -144,6 +166,7 @@ src/
 │  ├─ logout.ts        logout subcommand
 │  ├─ models.ts        models subcommand
 │  ├─ whoami.ts        whoami subcommand
+│  ├─ upgrade.ts       self-update from GitHub Releases (verifies SHA256)
 │  └─ prompt.ts        default one-shot prompt subcommand
 └─ index.ts            argv parser + dispatcher (exported `main()`)
 ```
