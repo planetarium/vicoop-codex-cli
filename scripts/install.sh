@@ -20,11 +20,11 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 # --- pick a downloader -------------------------------------------------------
 if have curl; then
-  dl() { curl -fsSL "$1"; }
-  dlo() { curl -fsSL -o "$2" "$1"; }
+  dl() { curl -fsSL --retry 3 --retry-delay 1 "$1"; }
+  dlo() { curl -fsSL --retry 3 --retry-delay 1 -o "$2" "$1"; }
 elif have wget; then
-  dl() { wget -qO- "$1"; }
-  dlo() { wget -qO "$2" "$1"; }
+  dl() { wget -qO- --tries=3 "$1"; }
+  dlo() { wget -qO "$2" --tries=3 "$1"; }
 else
   err "need curl or wget on PATH"
 fi
@@ -72,7 +72,7 @@ if dlo "$BASE/SHA256SUMS.txt" "$TMP/SHA256SUMS.txt" 2>/dev/null; then
     printf 'install: checksum verified\n' >&2
   fi
 else
-  printf 'install: SHA256SUMS.txt unavailable; skipping checksum verification\n' >&2
+  err "could not download SHA256SUMS.txt from $BASE/ — refusing to install unverified (retry, or download a binary manually from https://github.com/$REPO/releases)"
 fi
 
 chmod +x "$TMP/$NAME"
