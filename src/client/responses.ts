@@ -1,5 +1,6 @@
 import { fetchCodexBackend } from "./backend.js";
 import { parseSse } from "./sse.js";
+import { derivePromptCacheKey } from "./prompt-cache-key.js";
 
 export type ReasoningEffort = "low" | "medium" | "high";
 
@@ -16,8 +17,18 @@ export interface RunRequest {
   prompt: string;
   /** Reasoning effort. Defaults to "medium". Set to undefined to omit. */
   reasoningEffort?: ReasoningEffort;
-  /** When false (default), the prompt is not stored on the server. */
+  /**
+   * When false (default), the prompt is not stored on the server. The ChatGPT
+   * Codex backend in fact requires store:false (it rejects store:true), so this
+   * is effectively fixed; prompt caching works regardless via prompt_cache_key.
+   */
   store?: boolean;
+  /**
+   * Cache-routing key sent upstream as `prompt_cache_key`. When omitted, a
+   * stable key is derived from the instructions + prompt so repeated requests
+   * with the same prefix hit the backend prompt cache.
+   */
+  promptCacheKey?: string;
 }
 
 export interface ResponseUsage {
@@ -51,12 +62,13 @@ export interface RunResult {
 const DEFAULT_INSTRUCTIONS = "You are a helpful assistant.";
 
 function buildBody(req: RunRequest): unknown {
+  const instructions =
+    req.instructions && req.instructions.length > 0
+      ? req.instructions
+      : DEFAULT_INSTRUCTIONS;
   const body: Record<string, unknown> = {
     model: req.model,
-    instructions:
-      req.instructions && req.instructions.length > 0
-        ? req.instructions
-        : DEFAULT_INSTRUCTIONS,
+    instructions,
     input: [
       {
         type: "message",
@@ -70,6 +82,10 @@ function buildBody(req: RunRequest): unknown {
     store: req.store ?? false,
     stream: true,
     include: [],
+    prompt_cache_key:
+      req.promptCacheKey && req.promptCacheKey.length > 0
+        ? req.promptCacheKey
+        : derivePromptCacheKey(instructions, req.prompt),
   };
   if (req.reasoningEffort !== undefined) {
     body.reasoning = { effort: req.reasoningEffort };

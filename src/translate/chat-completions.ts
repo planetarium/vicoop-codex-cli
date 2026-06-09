@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { parseSse } from "../client/sse.js";
+import { derivePromptCacheKey } from "../client/prompt-cache-key.js";
 
 export const DEFAULT_INSTRUCTIONS = "You are a helpful assistant.";
 
@@ -109,6 +110,7 @@ export const UPSTREAM_ACCEPTED_FIELDS = new Set([
   "stream",
   "include",
   "text",
+  "prompt_cache_key",
 ]);
 
 export const CHAT_FIELDS_CONSUMED = new Set([
@@ -121,6 +123,7 @@ export const CHAT_FIELDS_CONSUMED = new Set([
   "parallel_tool_calls",
   "reasoning_effort",
   "response_format",
+  "prompt_cache_key",
 ]);
 
 export function extractText(content: ChatMessage["content"]): string {
@@ -144,6 +147,8 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
   const systemTexts: string[] = [];
   const inputItems: unknown[] = [];
   const droppedContentTypes = new Set<string>();
+  // The first user turn anchors the derived prompt_cache_key (see below).
+  let firstUserText = "";
 
   for (const msg of body.messages ?? []) {
     if (Array.isArray(msg.content)) {
@@ -161,6 +166,7 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
     }
     if (role === "user") {
       const t = extractText(msg.content);
+      if (firstUserText.length === 0 && t.length > 0) firstUserText = t;
       inputItems.push({
         type: "message",
         role: "user",
@@ -221,19 +227,36 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
     toolChoice = tools.length > 0 ? "auto" : "none";
   }
 
+  const instructions =
+    systemTexts.length > 0 ? systemTexts.join("\n\n") : DEFAULT_INSTRUCTIONS;
+
   const candidate: Record<string, unknown> = {
     // No default: callers must validate `model` before reaching here. When it
     // is absent the key serializes away and the backend rejects with a clear
     // "model is required" error rather than silently using a stale slug.
     model: body.model,
-    instructions: systemTexts.length > 0 ? systemTexts.join("\n\n") : DEFAULT_INSTRUCTIONS,
+    instructions,
     input: inputItems,
     tools,
     tool_choice: toolChoice,
+    // Must be false: the ChatGPT Codex backend hard-rejects store:true with
+    // "Store must be set to false". Prompt caching still works under
+    // store:false — it is driven by the stable prefix + prompt_cache_key, not
+    // by server-side storage.
     store: false,
     stream: true,
     include: [],
   };
+
+  // Route prompt caching: honor a caller-supplied key verbatim (e.g. the
+  // vicoop-bridge passes a per-conversation key), otherwise derive a stable
+  // one from the prefix so repeated/continued turns hit the same cache shard.
+  const callerKey =
+    typeof body.prompt_cache_key === "string" && body.prompt_cache_key.length > 0
+      ? body.prompt_cache_key
+      : undefined;
+  candidate.prompt_cache_key =
+    callerKey ?? derivePromptCacheKey(instructions, firstUserText);
 
   if (typeof body.parallel_tool_calls === "boolean") {
     candidate.parallel_tool_calls = body.parallel_tool_calls;
