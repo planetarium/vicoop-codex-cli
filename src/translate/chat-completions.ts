@@ -109,6 +109,7 @@ export const UPSTREAM_ACCEPTED_FIELDS = new Set([
   "stream",
   "include",
   "text",
+  "prompt_cache_key",
 ]);
 
 export const CHAT_FIELDS_CONSUMED = new Set([
@@ -121,6 +122,7 @@ export const CHAT_FIELDS_CONSUMED = new Set([
   "parallel_tool_calls",
   "reasoning_effort",
   "response_format",
+  "prompt_cache_key",
 ]);
 
 export function extractText(content: ChatMessage["content"]): string {
@@ -230,10 +232,23 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
     input: inputItems,
     tools,
     tool_choice: toolChoice,
+    // Must be false: the ChatGPT Codex backend hard-rejects store:true with
+    // "Store must be set to false". Prompt caching still works under
+    // store:false — it is driven by the stable prefix + prompt_cache_key, not
+    // by server-side storage.
     store: false,
     stream: true,
     include: [],
   };
+
+  // Pass a caller-supplied prompt_cache_key through verbatim (e.g. the
+  // vicoop-bridge's per-conversation task.contextId) to pin same-prefix
+  // requests to one cache shard. When absent we send nothing: the backend
+  // already routes by prefix hash, so a locally derived key would only
+  // re-encode that same prefix without improving stickiness.
+  if (typeof body.prompt_cache_key === "string" && body.prompt_cache_key.length > 0) {
+    candidate.prompt_cache_key = body.prompt_cache_key;
+  }
 
   if (typeof body.parallel_tool_calls === "boolean") {
     candidate.parallel_tool_calls = body.parallel_tool_calls;

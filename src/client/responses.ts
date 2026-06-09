@@ -16,8 +16,18 @@ export interface RunRequest {
   prompt: string;
   /** Reasoning effort. Defaults to "medium". Set to undefined to omit. */
   reasoningEffort?: ReasoningEffort;
-  /** When false (default), the prompt is not stored on the server. */
+  /**
+   * When false (default), the prompt is not stored on the server. The ChatGPT
+   * Codex backend in fact requires store:false (it rejects store:true), so this
+   * is effectively fixed; prompt caching works regardless via prompt_cache_key.
+   */
   store?: boolean;
+  /**
+   * Optional cache-routing key sent upstream as `prompt_cache_key`. Pins
+   * same-prefix requests to one cache shard; when omitted the backend routes
+   * by prefix hash alone.
+   */
+  promptCacheKey?: string;
 }
 
 export interface ResponseUsage {
@@ -71,6 +81,9 @@ function buildBody(req: RunRequest): unknown {
     stream: true,
     include: [],
   };
+  if (req.promptCacheKey && req.promptCacheKey.length > 0) {
+    body.prompt_cache_key = req.promptCacheKey;
+  }
   if (req.reasoningEffort !== undefined) {
     body.reasoning = { effort: req.reasoningEffort };
   }
