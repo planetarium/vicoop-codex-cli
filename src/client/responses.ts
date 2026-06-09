@@ -1,6 +1,5 @@
 import { fetchCodexBackend } from "./backend.js";
 import { parseSse } from "./sse.js";
-import { derivePromptCacheKey } from "./prompt-cache-key.js";
 
 export type ReasoningEffort = "low" | "medium" | "high";
 
@@ -24,9 +23,9 @@ export interface RunRequest {
    */
   store?: boolean;
   /**
-   * Cache-routing key sent upstream as `prompt_cache_key`. When omitted, a
-   * stable key is derived from the instructions + prompt so repeated requests
-   * with the same prefix hit the backend prompt cache.
+   * Optional cache-routing key sent upstream as `prompt_cache_key`. Pins
+   * same-prefix requests to one cache shard; when omitted the backend routes
+   * by prefix hash alone.
    */
   promptCacheKey?: string;
 }
@@ -62,13 +61,12 @@ export interface RunResult {
 const DEFAULT_INSTRUCTIONS = "You are a helpful assistant.";
 
 function buildBody(req: RunRequest): unknown {
-  const instructions =
-    req.instructions && req.instructions.length > 0
-      ? req.instructions
-      : DEFAULT_INSTRUCTIONS;
   const body: Record<string, unknown> = {
     model: req.model,
-    instructions,
+    instructions:
+      req.instructions && req.instructions.length > 0
+        ? req.instructions
+        : DEFAULT_INSTRUCTIONS,
     input: [
       {
         type: "message",
@@ -82,11 +80,10 @@ function buildBody(req: RunRequest): unknown {
     store: req.store ?? false,
     stream: true,
     include: [],
-    prompt_cache_key:
-      req.promptCacheKey && req.promptCacheKey.length > 0
-        ? req.promptCacheKey
-        : derivePromptCacheKey(instructions, req.prompt),
   };
+  if (req.promptCacheKey && req.promptCacheKey.length > 0) {
+    body.prompt_cache_key = req.promptCacheKey;
+  }
   if (req.reasoningEffort !== undefined) {
     body.reasoning = { effort: req.reasoningEffort };
   }
