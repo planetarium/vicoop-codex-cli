@@ -21,6 +21,7 @@ interface PromptOptions {
 
 interface LoginOptions {
   browser: boolean;
+  deviceCode?: boolean;
 }
 
 interface WhoamiOptions {
@@ -95,10 +96,17 @@ Examples:
 
   program
     .command("login")
-    .description("Sign in to ChatGPT via OAuth (PKCE).")
+    .description("Sign in to ChatGPT via OAuth (PKCE loopback, or --device-code).")
     .option("--no-browser", "Don't try to open a browser automatically")
+    .option(
+      "--device-code",
+      "Use OpenAI's device-code flow: print a URL + one-time code to enter in any browser (for headless/remote machines; requires device-code login enabled on your OpenAI account)",
+    )
     .action(async (options: LoginOptions) => {
-      const code = await loginCommand({ noBrowser: !options.browser });
+      const code = await loginCommand({
+        noBrowser: !options.browser,
+        deviceCode: options.deviceCode === true,
+      });
       process.exit(code);
     });
 

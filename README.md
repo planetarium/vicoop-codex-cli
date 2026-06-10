@@ -7,6 +7,7 @@ This project is a stripped-down, language-ported reimplementation of the OAuth +
 ## What it does
 
 - `vicoop-codex login` — opens a browser, performs the OAuth PKCE flow, stores tokens locally.
+- `vicoop-codex login --device-code` — device-code flow for headless/remote machines: prints a URL + one-time code to enter in any browser (no local callback needed).
 - `vicoop-codex "your prompt"` — sends a one-shot prompt and streams the response.
 - Automatic token refresh on `401`.
 - Optional non-streaming or JSON output.
@@ -97,6 +98,10 @@ node ./bin/vicoop-codex.js "hello"
 # 1) Authenticate (one-time per machine)
 vicoop-codex login
 
+# ...or, on a headless / remote box, use the device-code flow
+# (prints a URL + one-time code to enter in a browser on any device)
+vicoop-codex login --device-code
+
 # 2) Send prompts
 vicoop-codex "Explain monads in one paragraph"
 
@@ -165,6 +170,24 @@ On every LLM request, the CLI:
 2. Sends `Authorization: Bearer …` plus `ChatGPT-Account-ID: …` to `https://chatgpt.com/backend-api/codex/responses`.
 3. If the response is `401`, refreshes once and retries.
 
+### Device-code flow (`login --device-code`)
+
+For machines with no browser (servers, containers, SSH sessions), `--device-code`
+uses OpenAI's device-authorization flow instead of the loopback server:
+
+1. CLI `POST`s to `https://auth.openai.com/api/accounts/deviceauth/usercode` and gets back a one-time `user_code`.
+2. CLI prints `https://auth.openai.com/codex/device` + the code; you open that URL in a browser on *any* device and enter the code (valid 15 minutes).
+3. CLI polls `…/api/accounts/deviceauth/token` until you authorize, then receives an OAuth `authorization_code` + PKCE verifier.
+4. CLI exchanges that at `https://auth.openai.com/oauth/token` and stores the tokens exactly like the browser flow.
+
+> This is OpenAI's proprietary Codex device flow (not RFC 8628), ported from
+> `openai/codex` `codex-rs/login/src/device_code_auth.rs`. Availability is
+> controlled **server-side by OpenAI per account/client** — if it isn't enabled,
+> the usercode request returns `404` and the CLI prints a guide on how to enable
+> it (ChatGPT Settings → Security for personal accounts; a workspace admin for
+> Team/Enterprise) plus the no-device fallbacks (`login`, `login --no-browser`,
+> or an `ssh -L 1455:localhost:1455` port-forward).
+
 ## Architecture
 
 ```
@@ -175,7 +198,8 @@ src/
 │  ├─ jwt.ts           decode id_token, extract chatgpt_account_id, isExpired
 │  ├─ server.ts        local 127.0.0.1 callback HTTP server
 │  ├─ oauth.ts         token exchange + refresh requests
-│  ├─ login.ts         end-to-end PKCE login flow
+│  ├─ device.ts        OpenAI device-code flow (usercode request + token poll)
+│  ├─ login.ts         end-to-end PKCE login flow (loopback + device-code)
 │  ├─ manager.ts       loadActiveAuth + forceRefresh (used by client)
 │  └─ store.ts         read/write/clear ~/.vicoop-codex/auth.json
 ├─ client/
@@ -228,4 +252,16 @@ Merges to `main` do **not** release; they only run the build/type-check gate in
 
 ## License
 
-Same license terms as the upstream Codex project.
+This project is licensed under the **Apache License, Version 2.0** — see
+[`LICENSE`](./LICENSE).
+
+`vicoop-codex-cli` is a TypeScript port of the OAuth sign-in + LLM-call subset
+of [OpenAI Codex](https://github.com/openai/codex) (`codex-rs`), which is also
+licensed under Apache-2.0 (Copyright 2025 OpenAI). The upstream Rust source has
+been reimplemented and modified in TypeScript; see [`NOTICE`](./NOTICE) for the
+required attribution.
+
+> **Trademarks & affiliation.** "Codex", "ChatGPT", and "OpenAI" are trademarks
+> of OpenAI. This is an independent, unofficial project and is **not** affiliated
+> with, endorsed by, or sponsored by OpenAI. Apache-2.0 grants no rights to these
+> marks (§6).

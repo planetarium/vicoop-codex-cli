@@ -19,6 +19,9 @@ export function formatNotAuthenticated(): string {
     "",
     "If a browser doesn't open automatically, use --no-browser to get a URL to copy:",
     `  $ ${BIN} login --no-browser`,
+    "",
+    "On a headless / remote machine, try the device-code flow (enter a code at a URL):",
+    `  $ ${BIN} login --device-code`,
   ].join("\n");
 }
 
@@ -76,6 +79,61 @@ export function formatMissingMessages(): string {
     `      {"role":"system","content":"Be terse."},`,
     `      {"role":"user","content":"hi"}`,
     `    ]}'`,
+  ].join("\n");
+}
+
+/**
+ * `login --device-code` failed because OpenAI doesn't have device-code login
+ * enabled for this account/client. Device-code availability is controlled
+ * server-side by OpenAI (it is not a knob this CLI can flip), so the guide is
+ * deliberately honest: how to *try* to enable it, plus the fallbacks that work
+ * without it.
+ */
+export function formatDeviceFlowNotEnabled(): string {
+  return [
+    "Device-code login is not enabled for this OpenAI account.",
+    "",
+    "Device-code sign-in is a server-controlled feature on OpenAI's side —",
+    "this CLI can't turn it on for you. To enable it:",
+    "",
+    "  • Personal ChatGPT account:",
+    "      Open ChatGPT → Settings → Security (or Data controls) and enable the",
+    '      "device code" / "device authorization" option if your plan offers it.',
+    "      Not every account exposes this toggle.",
+    "",
+    "  • Team / Enterprise / Workspace account:",
+    "      A workspace admin must enable device-code authentication in the",
+    "      workspace settings → permissions. Ask your admin to turn it on.",
+    "",
+    "You don't need device-code to sign in — use the standard browser login:",
+    `  $ ${BIN} login`,
+    "",
+    "No browser on this machine? Print a URL you can open on another device:",
+    `  $ ${BIN} login --no-browser`,
+    "",
+    "On a remote/SSH box, forward the callback port and finish in your local browser:",
+    "  $ ssh -L 1455:localhost:1455 <user>@<remote-host>",
+    `  # then on the remote:  ${BIN} login --no-browser`,
+    "  # and open the printed URL in your local browser",
+  ].join("\n");
+}
+
+/**
+ * `login --device-code` was blocked by a Cloudflare bot challenge in front of
+ * auth.openai.com. Not an account problem — usually clears on retry.
+ */
+export function formatCloudflareChallenge(): string {
+  return [
+    "The device-authorization request was blocked by a Cloudflare challenge.",
+    "",
+    "This is bot protection in front of OpenAI's auth servers, not an account",
+    "problem. It tends to clear when retried from an interactive network.",
+    "",
+    "Things to try:",
+    "  • Run the command again in a moment.",
+    "  • Avoid datacenter / VPN / proxy IPs if you can.",
+    "  • Or fall back to the standard browser login:",
+    `      $ ${BIN} login`,
   ].join("\n");
 }
 
