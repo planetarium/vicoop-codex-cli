@@ -6,6 +6,7 @@ import {
 import { generatePkcePair, generateState } from "./pkce.js";
 import { startCallbackServer } from "./server.js";
 import { exchangeAuthCode } from "./oauth.js";
+import { requestDeviceCode, pollForAuthorizationCode } from "./device.js";
 import { extractAccountId } from "./jwt.js";
 import { writeAuth, type AuthFile } from "./store.js";
 
@@ -38,6 +39,27 @@ function buildAuthorizeUrl(opts: {
     originator,
   });
   return `${base}?${params.toString()}`;
+}
+
+/** Assemble and persist the auth file from a freshly-exchanged token set. */
+async function persistLogin(tokens: {
+  idToken: string;
+  accessToken: string;
+  refreshToken: string;
+}): Promise<AuthFile> {
+  const accountId = extractAccountId(tokens.idToken);
+  const authFile: AuthFile = {
+    auth_mode: "chatgpt",
+    tokens: {
+      id_token: tokens.idToken,
+      access_token: tokens.accessToken,
+      refresh_token: tokens.refreshToken,
+      account_id: accountId,
+    },
+    last_refresh: new Date().toISOString(),
+  };
+  await writeAuth(authFile);
+  return authFile;
 }
 
 async function openInBrowser(url: string): Promise<void> {
@@ -88,22 +110,44 @@ export async function runLogin(options: LoginOptions = {}): Promise<AuthFile> {
       redirectUri: server.redirectUri,
       codeVerifier,
     });
-    const accountId = extractAccountId(tokens.idToken);
-
-    const authFile: AuthFile = {
-      auth_mode: "chatgpt",
-      tokens: {
-        id_token: tokens.idToken,
-        access_token: tokens.accessToken,
-        refresh_token: tokens.refreshToken,
-        account_id: accountId,
-      },
-      last_refresh: new Date().toISOString(),
-    };
-    await writeAuth(authFile);
+    const authFile = await persistLogin(tokens);
     process.stderr.write("Login successful.\n");
     return authFile;
   } finally {
     await server.close();
   }
+}
+
+/**
+ * Device-code login: print a verification URL + one-time code, poll until the
+ * user authorizes, then exchange the resulting authorization code for tokens.
+ * No local callback server is needed, so this works on headless/remote hosts
+ * (assuming OpenAI has device-code login enabled for the account).
+ *
+ * Throws {@link import("./device.js").DeviceFlowNotEnabledError} when the flow
+ * isn't available — callers should surface the remediation guide.
+ */
+export async function runDeviceLogin(options: LoginOptions = {}): Promise<AuthFile> {
+  const device = await requestDeviceCode();
+
+  process.stderr.write(
+    `\nTo sign in, open this URL in any browser:\n  ${device.verificationUri}\n\n` +
+      `and enter this one-time code:\n  ${device.userCode}\n\n` +
+      `(the code is valid for 15 minutes)\n\n`,
+  );
+  if (!options.noBrowser) {
+    await openInBrowser(device.verificationUri);
+  }
+  process.stderr.write("Waiting for you to authorize in the browser … (Ctrl+C to cancel)\n");
+
+  const { authorizationCode, codeVerifier, redirectUri } =
+    await pollForAuthorizationCode(device);
+  const tokens = await exchangeAuthCode({
+    code: authorizationCode,
+    redirectUri,
+    codeVerifier,
+  });
+  const authFile = await persistLogin(tokens);
+  process.stderr.write("Login successful.\n");
+  return authFile;
 }
