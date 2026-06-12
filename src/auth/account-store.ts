@@ -24,6 +24,23 @@ import {
  * is carried for display and as a human-friendly selector.
  */
 
+/**
+ * Cached usage snapshot, used by usage-aware selection strategies so they don't
+ * fetch on every request. `reset*At` are absolute epoch seconds (age-independent);
+ * `reset*After` are the seconds-until-reset seen at `fetchedAt` (fallback).
+ */
+export interface UsageCacheEntry {
+  fetchedAt: string;
+  planType?: string;
+  limitReached?: boolean;
+  primaryRemaining?: number;
+  primaryResetAt?: number;
+  primaryResetAfter?: number;
+  secondaryRemaining?: number;
+  secondaryResetAt?: number;
+  secondaryResetAfter?: number;
+}
+
 export interface AccountMeta {
   /** Stable per-account id; also the filename stem. */
   key: string;
@@ -39,6 +56,8 @@ export interface AccountMeta {
   lastErrorAt?: string;
   /** When true, the account is excluded from automatic selection. */
   disabled?: boolean;
+  /** TTL-cached usage snapshot for usage-aware selection. */
+  usageCache?: UsageCacheEntry;
 }
 
 export interface AccountRecord {
@@ -344,6 +363,12 @@ export async function setDisabled(key: string, disabled: boolean): Promise<boole
   if (!rec) return false;
   await patchMeta(key, { disabled });
   return true;
+}
+
+/** Cache a usage snapshot for usage-aware selection. */
+export async function writeUsageCache(key: string, entry: UsageCacheEntry): Promise<void> {
+  await ensureMigrated();
+  await patchMeta(key, { usageCache: entry });
 }
 
 /** Effective selection strategy: env var wins, else persisted, else "random". */

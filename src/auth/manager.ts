@@ -9,9 +9,17 @@ import {
   readAccount,
   readAccountRecords,
   writeAccountAuth,
+  writeUsageCache,
   type AccountRecord,
+  type UsageCacheEntry,
 } from "./account-store.js";
-import { getSelector, type SelectableAccount, type SelectionContext } from "./selection/index.js";
+import {
+  getSelector,
+  type SelectableAccount,
+  type SelectionContext,
+  type UsageForSelection,
+} from "./selection/index.js";
+import type { UsageSnapshot } from "../client/usage.js";
 
 export class NotAuthenticatedError extends Error {
   constructor() {
@@ -130,6 +138,89 @@ function toSelectable(rec: AccountRecord): SelectableAccount {
   return { key: rec.meta.key, email: rec.meta.email, meta: rec.meta };
 }
 
+const USAGE_TTL_MS_DEFAULT = 60_000;
+
+function usageTtlMs(): number {
+  const raw = Number(process.env.VICOOP_CODEX_USAGE_TTL_SECONDS);
+  return Number.isFinite(raw) && raw >= 0 ? raw * 1000 : USAGE_TTL_MS_DEFAULT;
+}
+
+function isFreshCache(entry: UsageCacheEntry | undefined, ttlMs: number): boolean {
+  if (!entry) return false;
+  const t = new Date(entry.fetchedAt).getTime();
+  return Number.isFinite(t) && Date.now() - t < ttlMs;
+}
+
+function cacheToUsage(c: UsageCacheEntry): UsageForSelection {
+  const ms = new Date(c.fetchedAt).getTime();
+  const fetchedAtEpoch = Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
+  const primary =
+    c.primaryRemaining !== undefined ||
+    c.primaryResetAt !== undefined ||
+    c.primaryResetAfter !== undefined
+      ? {
+          remainingPercent: c.primaryRemaining,
+          resetAtEpoch: c.primaryResetAt,
+          resetAfterSeconds: c.primaryResetAfter,
+        }
+      : undefined;
+  const secondary =
+    c.secondaryRemaining !== undefined ||
+    c.secondaryResetAt !== undefined ||
+    c.secondaryResetAfter !== undefined
+      ? {
+          remainingPercent: c.secondaryRemaining,
+          resetAtEpoch: c.secondaryResetAt,
+          resetAfterSeconds: c.secondaryResetAfter,
+        }
+      : undefined;
+  return { planType: c.planType, limitReached: c.limitReached, fetchedAtEpoch, primary, secondary };
+}
+
+function snapshotToCache(snap: UsageSnapshot, fetchedAt: string): UsageCacheEntry {
+  return {
+    fetchedAt,
+    planType: snap.plan_type,
+    limitReached: snap.limit_reached,
+    primaryRemaining: snap.primary?.remaining_percent,
+    primaryResetAt: snap.primary?.reset_at,
+    primaryResetAfter: snap.primary?.reset_after_seconds,
+    secondaryRemaining: snap.secondary?.remaining_percent,
+    secondaryResetAt: snap.secondary?.reset_at,
+    secondaryResetAfter: snap.secondary?.reset_after_seconds,
+  };
+}
+
+/**
+ * Build selectables with usage attached, for usage-aware strategies. Uses each
+ * account's TTL cache; refreshes stale/missing entries in parallel via a live
+ * usage lookup (dynamic import avoids a manager↔usage module cycle). A failed
+ * lookup falls back to the stale cache, or leaves usage undefined (the selector
+ * treats that as "unknown" rather than failing).
+ */
+async function attachUsage(records: AccountRecord[]): Promise<SelectableAccount[]> {
+  const ttlMs = usageTtlMs();
+  const { fetchUsageForKey } = await import("../client/usage.js");
+  const fetchedAt = new Date().toISOString();
+  return Promise.all(
+    records.map(async (rec): Promise<SelectableAccount> => {
+      const base: SelectableAccount = { key: rec.meta.key, email: rec.meta.email, meta: rec.meta };
+      const cached = rec.meta.usageCache;
+      if (isFreshCache(cached, ttlMs)) {
+        return { ...base, usage: cacheToUsage(cached as UsageCacheEntry) };
+      }
+      try {
+        const snap = await fetchUsageForKey(rec.meta.key);
+        const entry = snapshotToCache(snap, fetchedAt);
+        await writeUsageCache(rec.meta.key, entry).catch(() => undefined);
+        return { ...base, usage: cacheToUsage(entry) };
+      } catch {
+        return cached ? { ...base, usage: cacheToUsage(cached) } : base;
+      }
+    }),
+  );
+}
+
 /**
  * Return the enrolled accounts as backend candidates, ordered by the active
  * selection strategy. Disabled accounts are excluded. Throws
@@ -144,7 +235,10 @@ export async function loadAuthCandidates(
 
   const selector = getSelector(await getStrategyName());
   const byKey = new Map(enabled.map((r) => [r.meta.key, r]));
-  const ordered = selector.order(enabled.map(toSelectable), ctx);
+  const selectables = selector.requiresUsage
+    ? await attachUsage(enabled)
+    : enabled.map(toSelectable);
+  const ordered = selector.order(selectables, ctx);
 
   const candidates: AccountCandidate[] = [];
   for (const sel of ordered) {
