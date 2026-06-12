@@ -12,6 +12,7 @@ import {
   accountsListCommand,
   accountsSetEnabledCommand,
   accountsStrategyCommand,
+  accountsUsageCommand,
   accountsUseCommand,
 } from "./commands/accounts.js";
 import type { ReasoningEffort } from "./client/responses.js";
@@ -232,6 +233,18 @@ Examples:
     .description("Show or set the account-selection strategy (default: random).")
     .action(async (name: string | undefined) => {
       const code = await accountsStrategyCommand(name);
+      process.exit(code);
+    });
+
+  accounts
+    .command("usage [account]")
+    .description("Show remaining Codex usage per account (5h + weekly windows). Omit [account] for all.")
+    .option("--json", "Output as JSON")
+    .action(async (account: string | undefined, options: AccountsListOpts) => {
+      const code = await accountsUsageCommand({
+        json: options.json === true,
+        selector: account,
+      });
       process.exit(code);
     });
 

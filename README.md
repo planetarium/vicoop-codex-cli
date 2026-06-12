@@ -164,7 +164,14 @@ vicoop-codex accounts enable  <email|key>
 # Show or set the selection strategy (env VICOOP_CODEX_ACCOUNT_STRATEGY overrides)
 vicoop-codex accounts strategy
 vicoop-codex accounts strategy random
+
+# Remaining Codex usage per account (5h + weekly windows; read-only, no quota cost)
+vicoop-codex accounts usage
+vicoop-codex accounts usage bob@home.com --json
 ```
+
+When running `serve`, the same data is available over HTTP at `GET /usage`
+(alias `GET /v1/usage`), returning `{ accounts: [ { key, email, plan_type, primary, secondary, credits, error } ] }`.
 
 Accounts can be referenced by email or by the short key shown in `accounts list`.
 Selection is pluggable — `random` is the only built-in strategy today, and new
@@ -249,6 +256,7 @@ src/
 │  └─ store.ts         read/write/clear the active-account ~/.vicoop-codex/auth.json mirror
 ├─ client/
 │  ├─ backend.ts       shared backend fetch: walks selected accounts, 401-refresh, fallback
+│  ├─ usage.ts         per-account remaining usage (GET /backend-api/wham/usage)
 │  ├─ models.ts        GET /backend-api/codex/models + model list normalization
 │  ├─ sse.ts           minimal text/event-stream parser
 │  └─ responses.ts     POST /backend-api/codex/responses + stream parsing

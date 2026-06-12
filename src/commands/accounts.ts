@@ -17,6 +17,12 @@ import {
 import { extractChatGptClaims } from "../auth/jwt.js";
 import { hasStrategy, listStrategies } from "../auth/selection/index.js";
 import {
+  fetchAllAccountUsage,
+  fetchUsageForKey,
+  type AccountUsage,
+  type RateLimitWindow,
+} from "../client/usage.js";
+import {
   formatCloudflareChallenge,
   formatDeviceFlowNotEnabled,
   printError,
@@ -190,4 +196,105 @@ export async function accountsStrategyCommand(name?: string): Promise<number> {
   await setStrategyName(name);
   process.stderr.write(`Selection strategy set to ${name}.\n`);
   return 0;
+}
+
+function fmtDuration(seconds?: number): string {
+  if (seconds === undefined || seconds < 0) return "?";
+  const s = Math.floor(seconds);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const parts: string[] = [];
+  if (d) parts.push(`${d}d`);
+  if (h) parts.push(`${h}h`);
+  if (m && !d) parts.push(`${m}m`);
+  if (parts.length === 0) parts.push(`${s}s`);
+  return parts.join(" ");
+}
+
+function fmtWindow(label: string, w?: RateLimitWindow): string {
+  if (!w) return `    ${label}: (n/a)`;
+  const win = w.limit_window_seconds ? ` / ${fmtDuration(w.limit_window_seconds)} window` : "";
+  const reset =
+    w.reset_after_seconds !== undefined ? `, resets in ${fmtDuration(w.reset_after_seconds)}` : "";
+  return `    ${label}: ${w.remaining_percent}% left (${w.used_percent}% used${win}${reset})`;
+}
+
+function usageToJson(r: AccountUsage): Record<string, unknown> {
+  return {
+    key: r.key,
+    email: r.email ?? null,
+    error: r.error ?? null,
+    plan_type: r.usage?.plan_type ?? null,
+    limit_reached: r.usage?.limit_reached ?? null,
+    primary: r.usage?.primary ?? null,
+    secondary: r.usage?.secondary ?? null,
+    credits: r.usage?.credits ?? null,
+    raw: r.usage?.raw ?? null,
+  };
+}
+
+export interface AccountsUsageOptions {
+  json: boolean;
+  /** Optional selector to query a single account instead of all. */
+  selector?: string;
+}
+
+export async function accountsUsageCommand(opts: AccountsUsageOptions): Promise<number> {
+  let results: AccountUsage[];
+  if (opts.selector) {
+    const rec = await resolveOrReport(opts.selector);
+    if (!rec) return 1;
+    try {
+      results = [
+        { key: rec.meta.key, email: rec.meta.email, usage: await fetchUsageForKey(rec.meta.key) },
+      ];
+    } catch (err) {
+      results = [
+        {
+          key: rec.meta.key,
+          email: rec.meta.email,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      ];
+    }
+  } else {
+    results = await fetchAllAccountUsage();
+  }
+
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(results.map(usageToJson), null, 2) + "\n");
+    return results.length > 0 && results.every((r) => r.error) ? 4 : 0;
+  }
+
+  if (results.length === 0) {
+    process.stdout.write(
+      `No accounts enrolled.\n\nSign in to add one:\n  $ ${BIN} login\n  $ ${BIN} accounts add\n`,
+    );
+    return 0;
+  }
+
+  for (const r of results) {
+    const head = `${r.email ?? "(unknown email)"}  [${r.key}]`;
+    if (r.error) {
+      process.stdout.write(`✗ ${head}\n    error: ${r.error}\n`);
+      continue;
+    }
+    const u = r.usage!;
+    process.stdout.write(
+      `  ${head}\n` +
+        `    plan: ${u.plan_type ?? "(unknown)"}${u.limit_reached ? "   ⚠ LIMIT REACHED" : ""}\n` +
+        fmtWindow("5h window ", u.primary) +
+        "\n" +
+        fmtWindow("weekly    ", u.secondary) +
+        "\n",
+    );
+    if (u.credits) {
+      const c = u.credits;
+      const bal = c.unlimited ? "unlimited" : c.balance ?? (c.has_credits ? "available" : "none");
+      process.stdout.write(`    credits: ${bal}\n`);
+    }
+  }
+  process.stdout.write(`\n("X% left" = remaining share of each rolling window)\n`);
+  return results.every((r) => r.error) ? 4 : 0;
 }
