@@ -68,6 +68,7 @@ makes it active. Two surfaces are new/changed:
 | `accounts enable <email\|key>` | Include an account in automatic selection. |
 | `accounts disable <email\|key>` | Exclude an account from automatic selection (kept enrolled). |
 | `accounts strategy [name]` | Show the current/available strategies, or set one. |
+| `accounts usage [email\|key] [--json]` | Show remaining Codex usage per account (5h + weekly windows). Omit the selector for all accounts. |
 
 ### `logout`
 
@@ -107,6 +108,37 @@ the streaming response body isn't consumed until after a candidate is chosen.
 
 Concurrent requests under `serve` that pick the same account share a single
 in-flight token refresh (no duplicate refresh storms).
+
+## Remaining usage
+
+Each ChatGPT-subscription account exposes its Codex usage/rate-limit status at
+`GET …/backend-api/wham/usage` — the account-wide **5-hour** (primary) and
+**weekly** (secondary) rolling windows, plus credits. This is a read-only call
+that does **not** consume quota, so it's safe to poll on demand.
+
+```bash
+vicoop-codex accounts usage              # all accounts
+vicoop-codex accounts usage bob@home.com # one account
+vicoop-codex accounts usage --json       # machine-readable (+ raw upstream payload)
+```
+
+Each window reports `used_percent`, `remaining_percent` (= 100 − used), the
+window length (`limit_window_seconds`), and `reset_after_seconds` / `reset_at`.
+The wire schema mirrors codex's `RateLimitStatusPayload`; parsing is defensive
+and the raw payload is preserved under `raw` in `--json`.
+
+**While serving**, the same data is exposed over HTTP:
+
+```
+GET /usage      (alias: GET /v1/usage)
+→ { "accounts": [ { key, email, plan_type, limit_reached, primary, secondary, credits, error } ] }
+```
+
+A per-account lookup failure (auth/network) is captured in that account's
+`error` field rather than failing the whole response.
+
+The endpoint URL can be overridden with `VICOOP_CODEX_USAGE_URL` (debugging /
+backend changes).
 
 ## Strategy configuration
 

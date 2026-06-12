@@ -21,6 +21,7 @@ import {
   type CodexUsage,
 } from "../translate/chat-completions.js";
 import { tryListModelIds } from "../client/models.js";
+import { fetchAllAccountUsage } from "../client/usage.js";
 import {
   getDefaultModel,
   setDefaultModel,
@@ -41,6 +42,7 @@ export interface ServeCmdOptions {
 }
 
 const ROUTE_PATH = "/v1/chat/completions";
+const USAGE_PATH = "/usage";
 
 function writeJsonError(
   res: http.ServerResponse,
@@ -373,6 +375,21 @@ function getBaseUrl(req: http.IncomingMessage, opts: ServeCmdOptions): string {
   return `${proto}://${host}`;
 }
 
+async function handleUsage(res: http.ServerResponse): Promise<void> {
+  const accounts = (await fetchAllAccountUsage()).map((r) => ({
+    key: r.key,
+    email: r.email ?? null,
+    error: r.error ?? null,
+    plan_type: r.usage?.plan_type ?? null,
+    limit_reached: r.usage?.limit_reached ?? null,
+    primary: r.usage?.primary ?? null,
+    secondary: r.usage?.secondary ?? null,
+    credits: r.usage?.credits ?? null,
+  }));
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ accounts }));
+}
+
 async function handleAgentCard(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -525,6 +542,13 @@ export async function serveCommand(opts: ServeCmdOptions): Promise<number> {
       });
       return;
     }
+    if (req.method === "GET" && (req.url === USAGE_PATH || req.url === "/v1/usage")) {
+      handleUsage(res).catch((err) => {
+        logError("usage handler threw", err);
+        writeJsonError(res, 500, (err as Error).message ?? String(err));
+      });
+      return;
+    }
     writeJsonError(res, 404, `Not Found: ${req.method} ${req.url}`, "invalid_request_error");
   });
 
@@ -552,6 +576,7 @@ export async function serveCommand(opts: ServeCmdOptions): Promise<number> {
   process.stderr.write(
     `vicoop-codex serve listening on:\n` +
       `  POST ${base}${ROUTE_PATH}        (OpenAI Chat Completions)\n` +
+      `  GET  ${base}${USAGE_PATH}                      (per-account remaining Codex usage)\n` +
       `  GET  ${base}${AGENT_CARD_PATH}        (A2A Agent Card)\n` +
       `  GET  ${base}${AGENT_CARD_PATH_ALT}  (A2A Agent Card — alt path)\n` +
       `  POST ${base}${A2A_ROUTE_PATH}        (A2A JSON-RPC, @a2x/sdk)\n` +

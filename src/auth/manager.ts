@@ -186,3 +186,23 @@ export async function forceRefresh(): Promise<ActiveAuth> {
   if (!rec) throw new NotAuthenticatedError();
   return toActiveAuth(await refreshAccountByKey(rec.meta.key), rec.meta.key);
 }
+
+/**
+ * Resolve auth for a *specific* enrolled account (not the selection pool),
+ * refreshing proactively if near expiry. Used by per-account queries such as
+ * the usage lookup, which must talk to each account individually rather than
+ * a randomly-selected one.
+ */
+export async function resolveAuthForKey(key: string): Promise<ActiveAuth> {
+  const rec = await readAccount(key);
+  if (!rec) throw new NotAuthenticatedError();
+  if (isExpired(rec.auth.tokens.access_token, SKEW_SECONDS)) {
+    return toActiveAuth(await refreshAccountByKey(key), key);
+  }
+  return toActiveAuth(rec.auth, key);
+}
+
+/** Force a refresh of a specific account — e.g. after a 401 on its usage call. */
+export async function refreshAuthForKey(key: string): Promise<ActiveAuth> {
+  return toActiveAuth(await refreshAccountByKey(key), key);
+}

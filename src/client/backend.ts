@@ -14,7 +14,15 @@ function buildCodexBackendUrl(path: CodexBackendPath, query?: URLSearchParams): 
   return url.toString();
 }
 
-function buildHeaders(auth: ActiveAuth, extra?: RequestInit["headers"]): Headers {
+/**
+ * Standard auth + identification headers for ChatGPT Codex backend calls.
+ * Exported so sibling clients (e.g. the usage endpoint, which lives at a
+ * different base path) can authenticate identically.
+ */
+export function buildCodexHeaders(
+  auth: ActiveAuth,
+  extra?: RequestInit["headers"],
+): Headers {
   const headers = new Headers(extra);
   headers.set("Authorization", `Bearer ${auth.accessToken}`);
   headers.set("OAI-Product-Sku", "codex");
@@ -32,7 +40,7 @@ async function fetchWithAuth(
 ): Promise<Response> {
   return fetch(buildCodexBackendUrl(path, query), {
     ...init,
-    headers: buildHeaders(auth, init.headers),
+    headers: buildCodexHeaders(auth, init.headers),
   });
 }
 
