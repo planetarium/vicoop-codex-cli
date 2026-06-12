@@ -109,6 +109,24 @@ the streaming response body isn't consumed until after a candidate is chosen.
 Concurrent requests under `serve` that pick the same account share a single
 in-flight token refresh (no duplicate refresh storms).
 
+## Seeing which account served a request
+
+Three ways, increasing in directness:
+
+1. **`accounts list`** shows each account's `last used:` timestamp. After a call,
+   the account whose timestamp just advanced is the one that served it. Repeat a
+   few prompts to watch selection spread across accounts; `accounts disable <key>`
+   one and confirm only the other advances.
+2. **`VICOOP_CODEX_LOG_ACCOUNT=1`** logs the chosen account (and any fallback
+   hops) to stderr for every backend call — works for `prompt`, `call`, `serve`,
+   and A2A. Off by default; no effect on normal output.
+   ```bash
+   VICOOP_CODEX_LOG_ACCOUNT=1 vicoop-codex prompt -m <model> "hi"
+   # stderr: [account] using bob@home.com [pro-9]
+   #         (on failover: [account] alice@corp.com [team-1] → HTTP 429; falling back to next account)
+   ```
+3. **`prompt --json`** includes an `account` field: `{ "account": { "key": "...", "email": "..." } }`.
+
 ## Remaining usage
 
 Each ChatGPT-subscription account exposes its Codex usage/rate-limit status at

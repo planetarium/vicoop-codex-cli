@@ -73,6 +73,7 @@ export async function promptCommand(opts: PromptCmdOptions): Promise<number> {
             response_id: result.responseId,
             usage: result.usage,
             model: result.model,
+            account: result.account ?? null,
           },
           null,
           2,
