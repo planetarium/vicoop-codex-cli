@@ -95,6 +95,20 @@ test("returns the last candidate's error when every account fails", async () => 
   assert.deepEqual(calls, ["aaa", "bbb"]);
 });
 
+test("onAccount reports the account whose response is returned (post-fallback)", async () => {
+  stub({ aaa: 429, bbb: 200 });
+  let used: { key: string; email?: string } | undefined;
+  const res = await fetchCodexBackend(
+    "/responses",
+    { method: "POST", body: "{}" },
+    undefined,
+    { onAccount: (info) => { used = info; } },
+  );
+  assert.equal(res.status, 200);
+  assert.equal(used?.key, "bbb"); // not the 429'd "aaa"
+  assert.equal(used?.email, "b@example.com");
+});
+
 test("isFallbackWorthyStatus policy", () => {
   for (const s of [401, 403, 408, 409, 425, 429, 500, 502, 503]) {
     assert.equal(isFallbackWorthyStatus(s), true, `expected ${s} fallback-worthy`);

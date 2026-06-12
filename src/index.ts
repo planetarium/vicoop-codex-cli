@@ -84,6 +84,7 @@ export async function main(): Promise<void> {
 Environment:
   VICOOP_CODEX_HOME              Override the credentials directory (default: ~/.vicoop-codex)
   VICOOP_CODEX_ACCOUNT_STRATEGY  Multi-account selection strategy (default: random; see \`accounts\`)
+  VICOOP_CODEX_LOG_ACCOUNT       Set to 1 to log which account each backend call used (stderr)
 
 Examples:
   $ vicoop-codex models                                  # list models you can use
@@ -104,7 +105,7 @@ Examples:
       ).choices(["low", "medium", "high"]),
     )
     .option("--no-stream", "Buffer the whole response, print at the end")
-    .option("--json", "Print JSON { text, response_id, usage, model }")
+    .option("--json", "Print JSON { text, response_id, usage, model, account }")
     .action(async (text: string[] | undefined, options: PromptOptions) => {
       const promptText = (text ?? []).join(" ");
       const code = await promptCommand({

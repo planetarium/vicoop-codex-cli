@@ -50,6 +50,26 @@ async function fetchWithAuth(
  * backend). Statuses that reflect the request itself (400/404/413/422 …) are
  * the same for every account, so they are returned as-is without fallback.
  */
+/** Identifies which enrolled account a call ultimately used. */
+export interface UsedAccountInfo {
+  key: string;
+  email?: string;
+}
+
+export interface FetchCodexOptions {
+  /** Invoked with the account whose response is returned (after fallback resolves). */
+  onAccount?: (info: UsedAccountInfo) => void;
+}
+
+function accountLogEnabled(): boolean {
+  const v = process.env.VICOOP_CODEX_LOG_ACCOUNT ?? process.env.VICOOP_CODEX_DEBUG;
+  return v === "1" || v === "true";
+}
+
+function accountLabel(info: UsedAccountInfo): string {
+  return `${info.email ?? "(unknown email)"} [${info.key}]`;
+}
+
 export function isFallbackWorthyStatus(status: number): boolean {
   return (
     status === 401 ||
@@ -91,14 +111,17 @@ export async function fetchCodexBackend(
   path: CodexBackendPath,
   init: RequestInit = {},
   query?: URLSearchParams,
+  opts?: FetchCodexOptions,
 ): Promise<Response> {
   const candidates = await loadAuthCandidates({
     reason: `${init.method ?? "GET"} ${path}`,
   });
+  const logging = accountLogEnabled();
 
   let lastError: unknown;
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i];
+    const info: UsedAccountInfo = { key: candidate.key, email: candidate.email };
     const isLast = i === candidates.length - 1;
 
     let auth: ActiveAuth;
@@ -106,6 +129,11 @@ export async function fetchCodexBackend(
       auth = await candidate.resolve();
     } catch (err) {
       lastError = err;
+      if (logging) {
+        process.stderr.write(
+          `[account] ${accountLabel(info)} unavailable: ${(err as Error).message ?? err}\n`,
+        );
+      }
       await candidate.reportError(err).catch(() => undefined);
       if (isLast) break;
       continue;
@@ -116,6 +144,11 @@ export async function fetchCodexBackend(
       res = await fetchWithAuth(auth, path, init, query);
     } catch (err) {
       lastError = err;
+      if (logging) {
+        process.stderr.write(
+          `[account] ${accountLabel(info)} network error: ${(err as Error).message ?? err}; ${isLast ? "no more accounts" : "falling back"}\n`,
+        );
+      }
       await candidate.reportError(err).catch(() => undefined);
       if (isLast) break;
       continue;
@@ -128,6 +161,11 @@ export async function fetchCodexBackend(
         res = await fetchWithAuth(auth, path, init, query);
       } catch (err) {
         lastError = err;
+        if (logging) {
+          process.stderr.write(
+            `[account] ${accountLabel(info)} refresh failed: ${(err as Error).message ?? err}; ${isLast ? "no more accounts" : "falling back"}\n`,
+          );
+        }
         await candidate.reportError(err).catch(() => undefined);
         if (isLast) break;
         continue;
@@ -136,11 +174,22 @@ export async function fetchCodexBackend(
 
     if (!isLast && isFallbackWorthyStatus(res.status)) {
       await discardBody(res);
+      if (logging) {
+        process.stderr.write(
+          `[account] ${accountLabel(info)} → HTTP ${res.status}; falling back to next account\n`,
+        );
+      }
       lastError = new Error(`ChatGPT backend returned HTTP ${res.status}`);
       await candidate.reportError(lastError).catch(() => undefined);
       continue;
     }
 
+    opts?.onAccount?.(info);
+    if (logging) {
+      process.stderr.write(
+        `[account] using ${accountLabel(info)}${res.ok ? "" : ` (HTTP ${res.status})`}\n`,
+      );
+    }
     if (res.ok) await candidate.reportSuccess().catch(() => undefined);
     return res;
   }

@@ -1,4 +1,8 @@
-import { fetchCodexBackend } from "./backend.js";
+import {
+  fetchCodexBackend,
+  type FetchCodexOptions,
+  type UsedAccountInfo,
+} from "./backend.js";
 import { parseSse } from "./sse.js";
 
 export type ReasoningEffort = "low" | "medium" | "high";
@@ -56,6 +60,8 @@ export interface RunResult {
   responseId?: string;
   usage?: ResponseUsage;
   model?: string;
+  /** Which enrolled account served this request (multi-account). */
+  account?: UsedAccountInfo;
 }
 
 const DEFAULT_INSTRUCTIONS = "You are a helpful assistant.";
@@ -116,16 +122,22 @@ async function readErrorBody(res: Response): Promise<string> {
 export async function postUpstream(
   body: unknown,
   signal?: AbortSignal,
+  opts?: FetchCodexOptions,
 ): Promise<Response> {
-  return fetchCodexBackend("/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
+  return fetchCodexBackend(
+    "/responses",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(body),
+      signal,
     },
-    body: JSON.stringify(body),
-    signal,
-  });
+    undefined,
+    opts,
+  );
 }
 
 export async function runResponse(
@@ -134,7 +146,12 @@ export async function runResponse(
   signal?: AbortSignal,
 ): Promise<RunResult> {
   const body = buildBody(req);
-  const res = await postUpstream(body, signal);
+  let account: UsedAccountInfo | undefined;
+  const res = await postUpstream(body, signal, {
+    onAccount: (info) => {
+      account = info;
+    },
+  });
 
   if (!res.ok || !res.body) {
     const detail = await readErrorBody(res);
@@ -205,5 +222,5 @@ export async function runResponse(
     }
   }
 
-  return { text, responseId, usage, model };
+  return { text, responseId, usage, model, account };
 }
