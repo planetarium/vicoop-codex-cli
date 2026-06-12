@@ -1,5 +1,6 @@
 import type { AccountSelector } from "./types.js";
 import { RandomSelector } from "./random.js";
+import { BurnRateSelector } from "./burn-rate.js";
 
 export type SelectorFactory = () => AccountSelector;
 
@@ -25,6 +26,7 @@ export function hasStrategy(name: string): boolean {
 }
 
 registerSelector(DEFAULT_STRATEGY, () => new RandomSelector());
+registerSelector("burn-rate", () => new BurnRateSelector());
 
 /**
  * Resolve a strategy name to a selector instance. Unknown names fall back to

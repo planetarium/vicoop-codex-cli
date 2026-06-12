@@ -162,8 +162,9 @@ vicoop-codex accounts disable <email|key>
 vicoop-codex accounts enable  <email|key>
 
 # Show or set the selection strategy (env VICOOP_CODEX_ACCOUNT_STRATEGY overrides)
-vicoop-codex accounts strategy
-vicoop-codex accounts strategy random
+vicoop-codex accounts strategy            # show current + available
+vicoop-codex accounts strategy random     # uniform random (default)
+vicoop-codex accounts strategy burn-rate  # "use-it-or-lose-it": drain soonest-expiring quota first
 
 # Remaining Codex usage per account (5h + weekly windows; read-only, no quota cost)
 vicoop-codex accounts usage
@@ -174,9 +175,10 @@ When running `serve`, the same data is available over HTTP at `GET /usage`
 (alias `GET /v1/usage`), returning `{ accounts: [ { key, email, plan_type, primary, secondary, credits, error } ] }`.
 
 Accounts can be referenced by email or by the short key shown in `accounts list`.
-Selection is pluggable — `random` is the only built-in strategy today, and new
-ones (round-robin, least-recently-used, quota/health-aware) can be added by
-implementing one `order()` method. See [`docs/multi-account.md`](docs/multi-account.md).
+Selection is pluggable: `random` (default) and `burn-rate` (drains the account
+whose remaining quota would otherwise reset soonest, i.e. remaining ÷ time-to-reset)
+ship built-in; new strategies (round-robin, LRU, …) just implement one `order()`
+method. See [`docs/multi-account.md`](docs/multi-account.md).
 
 ### Upgrading
 

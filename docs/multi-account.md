@@ -170,6 +170,50 @@ Resolution order for the active strategy:
 An unknown strategy name falls back to `random` with a stderr warning, so a typo
 never breaks calls.
 
+Built-in strategies:
+
+| name | behavior |
+| --- | --- |
+| `random` (default) | uniform shuffle of the enabled accounts |
+| `burn-rate` | "use-it-or-lose-it" — prefer the account whose remaining quota would otherwise reset soonest (see below) |
+
+## The `burn-rate` strategy
+
+```bash
+vicoop-codex accounts strategy burn-rate
+```
+
+Prioritizes the account with the highest **required burn rate** on the short
+(5h) window:
+
+```
+urgency = remaining_percent / seconds_until_reset    # remaining ÷ time-to-reset
+```
+
+A high score means lots of quota is left **and** the window resets soon — i.e.
+that quota will be wasted unless spent now, so it's drained first. Concretely
+(both 80% remaining): an account resetting in 30 min outranks one resetting in
+4 h; and at equal reset time, the account with more remaining outranks the one
+with less. It's an amount-weighted earliest-deadline-first heuristic that
+minimizes wasted quota across accounts.
+
+Details:
+- **Usability gate**: accounts that are rate-limited (`limit_reached`) or have a
+  fully-consumed primary **or** secondary (weekly) window sort last — usable only
+  as fallback.
+- **Unknown usage**: if a usage lookup fails, that account sorts in the middle
+  (after scored accounts, before exhausted ones) with a random tiebreak, so it
+  isn't starved.
+- **Reset floor**: time-to-reset is floored at 60s to avoid divide-by-zero and
+  unbounded scores; a just-reset window naturally drops in priority as its
+  remaining refills and its reset moves far out again.
+- **Freshness**: usage is fetched (via `/wham/usage`) only for usage-aware
+  strategies and cached per account with a TTL (default 60s, override with
+  `VICOOP_CODEX_USAGE_TTL_SECONDS`). The first call after the TTL expires does
+  one usage GET per account (in parallel) before selecting; within the TTL it's
+  free. Absolute `reset_at` timestamps are cached, so a slightly stale cache
+  still scores correctly.
+
 ## Extending selection
 
 Selection is the designed extension seam. To add a policy
