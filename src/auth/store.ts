@@ -28,8 +28,27 @@ export function authFilePath(): string {
   return path.join(authDir(), "auth.json");
 }
 
+/**
+ * Root credentials directory (honors VICOOP_CODEX_HOME / the legacy override).
+ * The single-account `auth.json` lives directly inside it; multi-account state
+ * lives in `accounts/` and `state.json` alongside.
+ */
+export function homeDir(): string {
+  return authDir();
+}
+
+/** Directory holding one `<key>.json` per enrolled account (multi-account pool). */
+export function accountsDir(): string {
+  return path.join(authDir(), "accounts");
+}
+
+/** Path to the small CLI state file ({ activeKey, strategy }). */
+export function statePath(): string {
+  return path.join(authDir(), "state.json");
+}
+
 let migrationChecked = false;
-async function migrateLegacyDirIfNeeded(): Promise<void> {
+export async function migrateLegacyDirIfNeeded(): Promise<void> {
   if (migrationChecked) return;
   migrationChecked = true;
   if (process.env.VICOOP_CODEX_HOME || process.env[LEGACY_ENV_VAR]) return;

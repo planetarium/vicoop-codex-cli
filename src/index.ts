@@ -7,6 +7,13 @@ import { promptCommand } from "./commands/prompt.js";
 import { serveCommand } from "./commands/serve.js";
 import { upgradeCommand } from "./commands/upgrade.js";
 import { whoamiCommand } from "./commands/whoami.js";
+import {
+  accountsAddCommand,
+  accountsListCommand,
+  accountsSetEnabledCommand,
+  accountsStrategyCommand,
+  accountsUseCommand,
+} from "./commands/accounts.js";
 import type { ReasoningEffort } from "./client/responses.js";
 
 export const VERSION = "0.1.0";
@@ -26,6 +33,21 @@ interface LoginOptions {
 
 interface WhoamiOptions {
   json?: boolean;
+}
+
+interface LogoutOptions {
+  account?: string;
+  all?: boolean;
+}
+
+interface AccountsListOpts {
+  json?: boolean;
+}
+
+interface AccountsAddOpts {
+  deviceCode?: boolean;
+  browser: boolean;
+  activate: boolean;
 }
 
 interface ModelsOptions {
@@ -59,7 +81,8 @@ export async function main(): Promise<void> {
       "after",
       `
 Environment:
-  VICOOP_CODEX_HOME           Override the credentials directory (default: ~/.vicoop-codex)
+  VICOOP_CODEX_HOME              Override the credentials directory (default: ~/.vicoop-codex)
+  VICOOP_CODEX_ACCOUNT_STRATEGY  Multi-account selection strategy (default: random; see \`accounts\`)
 
 Examples:
   $ vicoop-codex models                                  # list models you can use
@@ -112,9 +135,19 @@ Examples:
 
   program
     .command("logout")
-    .description("Remove the stored credentials.")
-    .action(async () => {
-      const code = await logoutCommand();
+    .description(
+      "Remove stored credentials for an account (--account <id>) or all accounts (--all).",
+    )
+    .option(
+      "-a, --account <id>",
+      "Email or account key to log out (run `vicoop-codex accounts list`)",
+    )
+    .option("--all", "Log out every enrolled account")
+    .action(async (options: LogoutOptions) => {
+      const code = await logoutCommand({
+        account: options.account,
+        all: options.all === true,
+      });
       process.exit(code);
     });
 
@@ -124,6 +157,81 @@ Examples:
     .option("--json", "Output as JSON")
     .action(async (options: WhoamiOptions) => {
       const code = await whoamiCommand(options.json === true);
+      process.exit(code);
+    });
+
+  const accounts = program
+    .command("accounts")
+    .description(
+      "Manage multiple ChatGPT accounts. Calls pick one available account (default: random) and fall back to another on failure.",
+    )
+    .addHelpText(
+      "after",
+      `
+The active account is mirrored into auth.json so 'whoami'/'login'/'serve' keep
+working unchanged. Selection strategy can also be set via the
+VICOOP_CODEX_ACCOUNT_STRATEGY environment variable.
+
+Examples:
+  $ vicoop-codex accounts add                 # enroll another account
+  $ vicoop-codex accounts list                # show all enrolled accounts
+  $ vicoop-codex accounts use alice@corp.com  # set the active account
+  $ vicoop-codex accounts disable <key>       # exclude one from selection`,
+    );
+
+  accounts
+    .command("list")
+    .description("List enrolled accounts and the active selection strategy.")
+    .option("--json", "Output as JSON")
+    .action(async (options: AccountsListOpts) => {
+      const code = await accountsListCommand({ json: options.json === true });
+      process.exit(code);
+    });
+
+  accounts
+    .command("add")
+    .description("Enroll an additional ChatGPT account (same OAuth flow as `login`).")
+    .option("--no-browser", "Don't try to open a browser automatically")
+    .option("--device-code", "Use the device-code flow (headless/remote machines)")
+    .option("--no-activate", "Enroll without making it the active account")
+    .action(async (options: AccountsAddOpts) => {
+      const code = await accountsAddCommand({
+        deviceCode: options.deviceCode === true,
+        noBrowser: !options.browser,
+        activate: options.activate !== false,
+      });
+      process.exit(code);
+    });
+
+  accounts
+    .command("use <account>")
+    .description("Set the active account (email or key).")
+    .action(async (account: string) => {
+      const code = await accountsUseCommand(account);
+      process.exit(code);
+    });
+
+  accounts
+    .command("enable <account>")
+    .description("Include an account in automatic selection.")
+    .action(async (account: string) => {
+      const code = await accountsSetEnabledCommand(account, true);
+      process.exit(code);
+    });
+
+  accounts
+    .command("disable <account>")
+    .description("Exclude an account from automatic selection.")
+    .action(async (account: string) => {
+      const code = await accountsSetEnabledCommand(account, false);
+      process.exit(code);
+    });
+
+  accounts
+    .command("strategy [name]")
+    .description("Show or set the account-selection strategy (default: random).")
+    .action(async (name: string | undefined) => {
+      const code = await accountsStrategyCommand(name);
       process.exit(code);
     });
 

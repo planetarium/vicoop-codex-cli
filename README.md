@@ -123,11 +123,12 @@ vicoop-codex --json "List 3 advantages of TLA+" | jq -r .text
 # List currently advertised Codex backend models
 vicoop-codex models --json
 
-# Inspect the signed-in account
+# Inspect the signed-in (active) account
 vicoop-codex whoami
 
-# Sign out
-vicoop-codex logout
+# Sign out — pick the account to remove, or --all
+vicoop-codex logout --account alice@corp.com
+vicoop-codex logout --all
 
 # Update the standalone binary in place (checks GitHub Releases, verifies SHA256)
 vicoop-codex upgrade
@@ -135,6 +136,40 @@ vicoop-codex upgrade
 # Just check whether a newer version exists, without installing
 vicoop-codex upgrade --check
 ```
+
+### Multiple accounts
+
+You can enroll several ChatGPT accounts at once. Each request then picks one
+**available** account (default: at random) and **falls back** to another account
+if the call fails (auth/permission/quota/transient backend error). With a single
+account the behavior is identical to before.
+
+```bash
+# Enroll more accounts (same OAuth flow as `login`; `login` itself also enrolls)
+vicoop-codex accounts add
+vicoop-codex accounts add --device-code          # headless/remote
+vicoop-codex accounts add --no-activate          # enroll without switching active
+
+# See everything enrolled, the active account (*), and the selection strategy
+vicoop-codex accounts list
+vicoop-codex accounts list --json
+
+# Switch the active account (the one mirrored into auth.json for whoami/serve)
+vicoop-codex accounts use bob@home.com
+
+# Temporarily exclude / re-include an account from automatic selection
+vicoop-codex accounts disable <email|key>
+vicoop-codex accounts enable  <email|key>
+
+# Show or set the selection strategy (env VICOOP_CODEX_ACCOUNT_STRATEGY overrides)
+vicoop-codex accounts strategy
+vicoop-codex accounts strategy random
+```
+
+Accounts can be referenced by email or by the short key shown in `accounts list`.
+Selection is pluggable — `random` is the only built-in strategy today, and new
+ones (round-robin, least-recently-used, quota/health-aware) can be added by
+implementing one `order()` method. See [`docs/multi-account.md`](docs/multi-account.md).
 
 ### Upgrading
 
@@ -154,7 +189,13 @@ right `git pull` / `npm install -g` command instead.
 
 ## How auth works
 
-Credentials are stored in `~/.vicoop-codex/auth.json` (mode `0600`). Override the directory with `VICOOP_CODEX_HOME=/some/path`.
+Credentials are stored under `~/.vicoop-codex/` (mode `0600`). Override the directory with `VICOOP_CODEX_HOME=/some/path`.
+
+- `auth.json` — the **active** account, in the original single-account format (every existing reader keeps working).
+- `accounts/<key>.json` — one file per enrolled account (the multi-account pool).
+- `state.json` — `{ activeKey, strategy }`.
+
+A pre-existing single `auth.json` is imported into the pool on first run, so upgrading is transparent. The active account is always mirrored back into `auth.json`.
 
 The flow:
 
@@ -166,9 +207,11 @@ The flow:
 
 On every LLM request, the CLI:
 
-1. Refreshes the access token proactively if the JWT `exp` claim is within 60 s of now.
-2. Sends `Authorization: Bearer …` plus `ChatGPT-Account-ID: …` to `https://chatgpt.com/backend-api/codex/responses`.
-3. If the response is `401`, refreshes once and retries.
+1. Asks the active selection strategy for an ordered list of candidate accounts (default: a random shuffle of the enabled accounts).
+2. For the chosen account, refreshes the access token proactively if the JWT `exp` claim is within 60 s of now.
+3. Sends `Authorization: Bearer …` plus `ChatGPT-Account-ID: …` to `https://chatgpt.com/backend-api/codex/responses`.
+4. If the response is `401`, refreshes once and retries that account.
+5. If the account still fails with a fallback-worthy status (`401`/`403`/`408`/`409`/`425`/`429`/`5xx`) or a network error, it advances to the next candidate. Request-level errors (`400`/`404`/`413`/`422`, …) are returned as-is — they would fail the same way on any account. The last candidate's response (error or not) is always returned, so error messages are unchanged.
 
 ### Device-code flow (`login --device-code`)
 
@@ -199,17 +242,20 @@ src/
 │  ├─ server.ts        local 127.0.0.1 callback HTTP server
 │  ├─ oauth.ts         token exchange + refresh requests
 │  ├─ device.ts        OpenAI device-code flow (usercode request + token poll)
-│  ├─ login.ts         end-to-end PKCE login flow (loopback + device-code)
-│  ├─ manager.ts       loadActiveAuth + forceRefresh (used by client)
-│  └─ store.ts         read/write/clear ~/.vicoop-codex/auth.json
+│  ├─ login.ts         end-to-end PKCE login flow (loopback + device-code); enrolls into the pool
+│  ├─ manager.ts       loadAuthCandidates (selection + per-account refresh) + loadActiveAuth/forceRefresh
+│  ├─ account-store.ts multi-account pool: accounts/<key>.json, state.json, active mirror, migration
+│  ├─ selection/       pluggable account-selection strategies (types, random, registry)
+│  └─ store.ts         read/write/clear the active-account ~/.vicoop-codex/auth.json mirror
 ├─ client/
-│  ├─ backend.ts       shared ChatGPT Codex backend fetch + auth refresh
+│  ├─ backend.ts       shared backend fetch: walks selected accounts, 401-refresh, fallback
 │  ├─ models.ts        GET /backend-api/codex/models + model list normalization
 │  ├─ sse.ts           minimal text/event-stream parser
 │  └─ responses.ts     POST /backend-api/codex/responses + stream parsing
 ├─ commands/
 │  ├─ login.ts         login subcommand
-│  ├─ logout.ts        logout subcommand
+│  ├─ logout.ts        logout subcommand (--account <id> / --all)
+│  ├─ accounts.ts      accounts subcommands (list/add/use/enable/disable/strategy)
 │  ├─ models.ts        models subcommand
 │  ├─ whoami.ts        whoami subcommand
 │  ├─ upgrade.ts       self-update from GitHub Releases (verifies SHA256)

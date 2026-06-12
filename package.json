@@ -2,6 +2,7 @@
   "name": "vicoop-codex-cli",
   "version": "0.1.0",
   "description": "Lightweight Codex CLI that uses your ChatGPT subscription via OAuth to call the LLM (no tools, no sandbox, just prompts).",
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "vicoop-codex": "./bin/vicoop-codex.js"
@@ -10,11 +11,13 @@
     "bin/",
     "dist/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json -w",
+    "test": "tsc -p tsconfig.test.json && node --test \"dist-test/**/*.test.js\"",
     "start": "node ./bin/vicoop-codex.js",
     "cli:install": "npm run build && npm install -g .",
     "cli:uninstall": "npm uninstall -g vicoop-codex-cli",

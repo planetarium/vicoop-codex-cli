@@ -1,0 +1,151 @@
+# Multiple accounts
+
+`vicoop-codex` can hold credentials for several ChatGPT accounts at once. When a
+request is made (`prompt`, `call`, or the `serve` HTTP / A2A surfaces), the CLI
+picks one **available** account and, if that call fails, **falls back** to
+another. The selection policy is pluggable.
+
+With exactly one enrolled account, behavior is byte-for-byte identical to the
+original single-account CLI.
+
+## Concepts
+
+- **Pool** — every enrolled account. Stored as one file per account.
+- **Active account** — the account mirrored into the legacy `auth.json`. This is
+  what `whoami` shows and what single-account readers see. It is *not*
+  necessarily the account a given request uses — selection picks from the whole
+  enabled pool.
+- **Selection strategy** — decides the order in which accounts are tried for a
+  request. The head of that order is the primary pick; the rest is the fallback
+  order. Default: `random`.
+- **Key** — a stable per-account id (from the ChatGPT `chatgpt_account_id` claim,
+  falling back to the user id, then a hash of the refresh token). Shown in
+  `accounts list`; usable as a selector.
+
+## On-disk layout
+
+Under `$VICOOP_CODEX_HOME` (default `~/.vicoop-codex`, mode `0600`):
+
+```
+auth.json              # the ACTIVE account, original single-account format (a mirror)
+accounts/<key>.json    # one record per enrolled account: { auth, meta }
+state.json             # { activeKey, strategy }
+```
+
+`accounts/<key>.json`:
+
+```jsonc
+{
+  "auth": { "auth_mode": "chatgpt", "tokens": { ... }, "last_refresh": "..." },
+  "meta": {
+    "key": "user-abc123",
+    "email": "alice@corp.com",
+    "addedAt": "2026-06-12T...",
+    "lastUsedAt": "2026-06-12T...",   // updated on a successful call
+    "lastError": "HTTP 429",          // updated on a failed call
+    "lastErrorAt": "2026-06-12T...",
+    "disabled": false                  // excluded from selection when true
+  }
+}
+```
+
+**Migration is automatic:** on first run, a pre-existing single `auth.json` is
+imported into the pool and marked active. Nothing to do when upgrading.
+
+## Commands
+
+The existing surface (`login`, `prompt`, `call`, `serve`, `models`, `whoami`,
+`upgrade`) is unchanged. `login` now also enrolls the account into the pool and
+makes it active. Two surfaces are new/changed:
+
+### `accounts`
+
+| Command | Description |
+| --- | --- |
+| `accounts list [--json]` | List enrolled accounts (active marked `*`), plan, enabled/disabled, last-used / last-error, and the active strategy. |
+| `accounts add [--device-code] [--no-browser] [--no-activate]` | Enroll another account via the same OAuth/device flow as `login`. `--no-activate` enrolls without switching the active account (the first account is always activated). |
+| `accounts use <email\|key>` | Set the active account (updates the `auth.json` mirror). |
+| `accounts enable <email\|key>` | Include an account in automatic selection. |
+| `accounts disable <email\|key>` | Exclude an account from automatic selection (kept enrolled). |
+| `accounts strategy [name]` | Show the current/available strategies, or set one. |
+
+### `logout`
+
+`logout` now requires a target:
+
+| Command | Description |
+| --- | --- |
+| `logout --account <email\|key>` | Remove one account. If it was active, the active account repoints to a remaining one (or clears `auth.json` if none remain). |
+| `logout --all` | Remove every enrolled account and clear `auth.json`. |
+
+Bare `logout` prints a usage error listing the enrolled accounts.
+
+### Selectors
+
+`--account` / `use` / `enable` / `disable` accept, in priority order: an exact
+key, a case-insensitive email (must be unique), or an unambiguous key prefix.
+Ambiguous or unknown selectors produce an error listing the candidates.
+
+## Selection & fallback
+
+`fetchCodexBackend` (the single backend chokepoint) walks the candidate list the
+strategy returns:
+
+1. Resolve the candidate's auth, refreshing if the token is within 60 s of expiry.
+2. `POST`/`GET` upstream.
+3. On `401`, force-refresh that account once and retry.
+4. If the status is **fallback-worthy** and this isn't the last candidate, move
+   to the next account. Fallback-worthy = `401` (post-refresh), `403`, `408`,
+   `409`, `425`, `429`, `5xx`, or a network throw.
+5. Request-level statuses (`400`, `404`, `413`, `422`, …) are returned as-is —
+   they'd fail identically on any account.
+6. The **last** candidate's response is always returned, so error messages and
+   exit codes are exactly what the single-account CLI produced.
+
+This is safe to retry across accounts because the request body is a string and
+the streaming response body isn't consumed until after a candidate is chosen.
+
+Concurrent requests under `serve` that pick the same account share a single
+in-flight token refresh (no duplicate refresh storms).
+
+## Strategy configuration
+
+Resolution order for the active strategy:
+
+1. `VICOOP_CODEX_ACCOUNT_STRATEGY` environment variable (highest priority —
+   handy for `serve` deployments).
+2. The persisted `strategy` in `state.json` (set via `accounts strategy <name>`).
+3. Default: `random`.
+
+An unknown strategy name falls back to `random` with a stderr warning, so a typo
+never breaks calls.
+
+## Extending selection
+
+Selection is the designed extension seam. To add a policy
+(e.g. round-robin, least-recently-used, weighted, quota/health-aware):
+
+1. Implement `AccountSelector` (`src/auth/selection/types.ts`):
+
+   ```ts
+   export class RoundRobinSelector implements AccountSelector {
+     readonly name = "round-robin";
+     order(accounts: SelectableAccount[], ctx?: SelectionContext): SelectableAccount[] {
+       // return the full candidate list head→tail; head is the primary pick
+     }
+   }
+   ```
+
+   `SelectableAccount` carries `key`, `email`, and `meta` (including `lastUsedAt`
+   / `lastError` / `lastErrorAt`) — enough for time- or health-aware policies.
+   `SelectionContext.reason` carries a request hint (`"POST /responses"`) for
+   future request-aware routing.
+
+2. Register it in `src/auth/selection/registry.ts`:
+
+   ```ts
+   registerSelector("round-robin", () => new RoundRobinSelector());
+   ```
+
+No changes to the manager, backend loop, or commands are needed — the registry
+and `getStrategyName()` wire it up, and `accounts strategy round-robin` selects it.
