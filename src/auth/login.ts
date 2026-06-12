@@ -8,13 +8,21 @@ import { startCallbackServer } from "./server.js";
 import { exchangeAuthCode } from "./oauth.js";
 import { requestDeviceCode, pollForAuthorizationCode } from "./device.js";
 import { extractAccountId } from "./jwt.js";
-import { writeAuth, type AuthFile } from "./store.js";
+import { type AuthFile } from "./store.js";
+import { upsertAccount } from "./account-store.js";
 
 export interface LoginOptions {
   /** If true, do not attempt to open the browser automatically. */
   noBrowser?: boolean;
   /** Override host for the auth server (e.g. for testing). */
   authHost?: string;
+  /**
+   * Whether the freshly-enrolled account becomes the active one (mirrored into
+   * auth.json). Defaults to true — matches the single-account login flow. The
+   * first account is always activated regardless, so a non-active enrollment
+   * still leaves a usable active account.
+   */
+  activate?: boolean;
 }
 
 function buildAuthorizeUrl(opts: {
@@ -42,11 +50,14 @@ function buildAuthorizeUrl(opts: {
 }
 
 /** Assemble and persist the auth file from a freshly-exchanged token set. */
-async function persistLogin(tokens: {
-  idToken: string;
-  accessToken: string;
-  refreshToken: string;
-}): Promise<AuthFile> {
+async function persistLogin(
+  tokens: {
+    idToken: string;
+    accessToken: string;
+    refreshToken: string;
+  },
+  makeActive: boolean,
+): Promise<AuthFile> {
   const accountId = extractAccountId(tokens.idToken);
   const authFile: AuthFile = {
     auth_mode: "chatgpt",
@@ -58,7 +69,10 @@ async function persistLogin(tokens: {
     },
     last_refresh: new Date().toISOString(),
   };
-  await writeAuth(authFile);
+  // Enroll into the multi-account pool. upsertAccount also writes the auth.json
+  // mirror when this account is (or becomes) active, so the legacy single-file
+  // surface stays in sync.
+  await upsertAccount(authFile, { makeActive });
   return authFile;
 }
 
@@ -110,7 +124,7 @@ export async function runLogin(options: LoginOptions = {}): Promise<AuthFile> {
       redirectUri: server.redirectUri,
       codeVerifier,
     });
-    const authFile = await persistLogin(tokens);
+    const authFile = await persistLogin(tokens, options.activate !== false);
     process.stderr.write("Login successful.\n");
     return authFile;
   } finally {
@@ -147,7 +161,7 @@ export async function runDeviceLogin(options: LoginOptions = {}): Promise<AuthFi
     redirectUri,
     codeVerifier,
   });
-  const authFile = await persistLogin(tokens);
+  const authFile = await persistLogin(tokens, options.activate !== false);
   process.stderr.write("Login successful.\n");
   return authFile;
 }

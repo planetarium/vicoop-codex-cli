@@ -1,6 +1,17 @@
 import { isExpired, extractAccountId } from "./jwt.js";
 import { refreshTokens } from "./oauth.js";
-import { readAuth, writeAuth, type AuthFile } from "./store.js";
+import type { AuthFile } from "./store.js";
+import {
+  getActiveKey,
+  getStrategyName,
+  markError,
+  markUsed,
+  readAccount,
+  readAccountRecords,
+  writeAccountAuth,
+  type AccountRecord,
+} from "./account-store.js";
+import { getSelector, type SelectableAccount, type SelectionContext } from "./selection/index.js";
 
 export class NotAuthenticatedError extends Error {
   constructor() {
@@ -12,16 +23,45 @@ export class NotAuthenticatedError extends Error {
 export interface ActiveAuth {
   accessToken: string;
   accountId?: string;
+  /** Key of the enrolled account this auth came from (for logging / metadata). */
+  accountKey?: string;
 }
 
-async function refreshAndPersist(auth: AuthFile): Promise<AuthFile> {
-  const refreshed = await refreshTokens(auth.tokens.refresh_token);
-  const idToken = refreshed.idToken ?? auth.tokens.id_token;
+/**
+ * One account the backend loop can try. The selector decides the order of
+ * these; the loop walks them, calling `resolve()` (and `refresh()` after a 401)
+ * and reporting the outcome so future selection can be smarter.
+ */
+export interface AccountCandidate {
+  key: string;
+  email?: string;
+  /** Ready-to-use auth, refreshing+persisting first if the token is near expiry. */
+  resolve(): Promise<ActiveAuth>;
+  /** Force a token refresh for this account (used after a 401). */
+  refresh(): Promise<ActiveAuth>;
+  /** Record that a call on this account succeeded. */
+  reportSuccess(): Promise<void>;
+  /** Record that a call on this account failed (selection metadata). */
+  reportError(err: unknown): Promise<void>;
+}
+
+const SKEW_SECONDS = 60;
+
+// Dedupe concurrent refreshes of the same account (e.g. parallel `serve`
+// requests that both picked it) — mirrors the resolve-once pattern in
+// client/default-model.ts. Keyed by account key.
+const refreshInFlight = new Map<string, Promise<AuthFile>>();
+
+function mergeRefreshed(
+  prev: AuthFile,
+  refreshed: { idToken?: string; accessToken: string; refreshToken: string },
+): AuthFile {
+  const idToken = refreshed.idToken ?? prev.tokens.id_token;
   const accountId = refreshed.idToken
-    ? extractAccountId(refreshed.idToken) ?? auth.tokens.account_id
-    : auth.tokens.account_id;
-  const next: AuthFile = {
-    ...auth,
+    ? extractAccountId(refreshed.idToken) ?? prev.tokens.account_id
+    : prev.tokens.account_id;
+  return {
+    ...prev,
     tokens: {
       id_token: idToken,
       access_token: refreshed.accessToken,
@@ -30,30 +70,119 @@ async function refreshAndPersist(auth: AuthFile): Promise<AuthFile> {
     },
     last_refresh: new Date().toISOString(),
   };
-  await writeAuth(next);
-  return next;
 }
 
-/** Load auth and refresh proactively if the access_token is about to expire. */
+/**
+ * Refresh one account from its latest persisted refresh token and write the
+ * new tokens back. Concurrent callers for the same key share one in-flight
+ * request. Always reads the current record so it uses the freshest token.
+ */
+function refreshAccountByKey(key: string): Promise<AuthFile> {
+  let pending = refreshInFlight.get(key);
+  if (!pending) {
+    pending = (async () => {
+      const current = await readAccount(key);
+      if (!current) throw new NotAuthenticatedError();
+      const refreshed = await refreshTokens(current.auth.tokens.refresh_token);
+      const next = mergeRefreshed(current.auth, refreshed);
+      await writeAccountAuth(key, next);
+      return next;
+    })();
+    refreshInFlight.set(key, pending);
+    void pending.finally(() => {
+      if (refreshInFlight.get(key) === pending) refreshInFlight.delete(key);
+    });
+  }
+  return pending;
+}
+
+function toActiveAuth(auth: AuthFile, key: string): ActiveAuth {
+  return {
+    accessToken: auth.tokens.access_token,
+    accountId: auth.tokens.account_id,
+    accountKey: key,
+  };
+}
+
+function makeCandidate(rec: AccountRecord): AccountCandidate {
+  const key = rec.meta.key;
+  return {
+    key,
+    email: rec.meta.email,
+    resolve: async () => {
+      if (isExpired(rec.auth.tokens.access_token, SKEW_SECONDS)) {
+        return toActiveAuth(await refreshAccountByKey(key), key);
+      }
+      return toActiveAuth(rec.auth, key);
+    },
+    refresh: async () => toActiveAuth(await refreshAccountByKey(key), key),
+    reportSuccess: () => markUsed(key),
+    reportError: (err: unknown) => markError(key, errorMessage(err)),
+  };
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+function toSelectable(rec: AccountRecord): SelectableAccount {
+  return { key: rec.meta.key, email: rec.meta.email, meta: rec.meta };
+}
+
+/**
+ * Return the enrolled accounts as backend candidates, ordered by the active
+ * selection strategy. Disabled accounts are excluded. Throws
+ * {@link NotAuthenticatedError} when no usable account exists.
+ */
+export async function loadAuthCandidates(
+  ctx?: SelectionContext,
+): Promise<AccountCandidate[]> {
+  const records = await readAccountRecords();
+  const enabled = records.filter((r) => r.meta.disabled !== true);
+  if (enabled.length === 0) throw new NotAuthenticatedError();
+
+  const selector = getSelector(await getStrategyName());
+  const byKey = new Map(enabled.map((r) => [r.meta.key, r]));
+  const ordered = selector.order(enabled.map(toSelectable), ctx);
+
+  const candidates: AccountCandidate[] = [];
+  for (const sel of ordered) {
+    const rec = byKey.get(sel.key);
+    if (rec) candidates.push(makeCandidate(rec));
+  }
+  // Defensive: if a selector dropped/duplicated entries, fall back to all.
+  if (candidates.length === 0) return enabled.map(makeCandidate);
+  return candidates;
+}
+
+async function activeRecord(): Promise<AccountRecord | null> {
+  const key = await getActiveKey();
+  if (key) {
+    const rec = await readAccount(key);
+    if (rec) return rec;
+  }
+  const all = await readAccountRecords();
+  return all[0] ?? null;
+}
+
+/**
+ * Load the *active* account, refreshing proactively if near expiry. Retained
+ * for callers that want the single active account rather than the selection
+ * pool (the backend loop uses {@link loadAuthCandidates}).
+ */
 export async function loadActiveAuth(): Promise<ActiveAuth> {
-  const auth = await readAuth();
-  if (!auth) throw new NotAuthenticatedError();
-  const current = isExpired(auth.tokens.access_token, 60)
-    ? await refreshAndPersist(auth)
-    : auth;
-  return {
-    accessToken: current.tokens.access_token,
-    accountId: current.tokens.account_id,
-  };
+  const rec = await activeRecord();
+  if (!rec) throw new NotAuthenticatedError();
+  if (isExpired(rec.auth.tokens.access_token, SKEW_SECONDS)) {
+    return toActiveAuth(await refreshAccountByKey(rec.meta.key), rec.meta.key);
+  }
+  return toActiveAuth(rec.auth, rec.meta.key);
 }
 
-/** Force a refresh — used after a 401 from the API. */
+/** Force a refresh of the active account — e.g. after a 401. */
 export async function forceRefresh(): Promise<ActiveAuth> {
-  const auth = await readAuth();
-  if (!auth) throw new NotAuthenticatedError();
-  const next = await refreshAndPersist(auth);
-  return {
-    accessToken: next.tokens.access_token,
-    accountId: next.tokens.account_id,
-  };
+  const rec = await activeRecord();
+  if (!rec) throw new NotAuthenticatedError();
+  return toActiveAuth(await refreshAccountByKey(rec.meta.key), rec.meta.key);
 }
