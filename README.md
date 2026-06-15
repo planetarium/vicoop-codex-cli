@@ -140,9 +140,10 @@ vicoop-codex upgrade --check
 ### Multiple accounts
 
 You can enroll several ChatGPT accounts at once. Each request then picks one
-**available** account (default: at random) and **falls back** to another account
-if the call fails (auth/permission/quota/transient backend error). With a single
-account the behavior is identical to before.
+**available** account (default: `burn-rate`, draining soonest-expiring quota
+first) and **falls back** to another account if the call fails
+(auth/permission/quota/transient backend error). With a single account the
+behavior is identical to before.
 
 ```bash
 # Enroll more accounts (same OAuth flow as `login`; `login` itself also enrolls)
@@ -163,8 +164,8 @@ vicoop-codex accounts enable  <email|key>
 
 # Show or set the selection strategy (env VICOOP_CODEX_ACCOUNT_STRATEGY overrides)
 vicoop-codex accounts strategy            # show current + available
-vicoop-codex accounts strategy random     # uniform random (default)
-vicoop-codex accounts strategy burn-rate  # "use-it-or-lose-it": drain soonest-expiring quota first
+vicoop-codex accounts strategy burn-rate  # "use-it-or-lose-it": drain soonest-expiring quota first (default)
+vicoop-codex accounts strategy random     # uniform random
 
 # Remaining Codex usage per account (5h + weekly windows; read-only, no quota cost)
 vicoop-codex accounts usage
@@ -175,8 +176,8 @@ When running `serve`, the same data is available over HTTP at `GET /usage`
 (alias `GET /v1/usage`), returning `{ accounts: [ { key, email, plan_type, primary, secondary, credits, error } ] }`.
 
 Accounts can be referenced by email or by the short key shown in `accounts list`.
-Selection is pluggable: `random` (default) and `burn-rate` (drains the account
-whose remaining quota would otherwise reset soonest, i.e. remaining ÷ time-to-reset)
+Selection is pluggable: `burn-rate` (default; drains the account whose remaining
+quota would otherwise reset soonest, i.e. remaining ÷ time-to-reset) and `random`
 ship built-in; new strategies (round-robin, LRU, …) just implement one `order()`
 method. See [`docs/multi-account.md`](docs/multi-account.md).
 
@@ -216,7 +217,7 @@ The flow:
 
 On every LLM request, the CLI:
 
-1. Asks the active selection strategy for an ordered list of candidate accounts (default: a random shuffle of the enabled accounts).
+1. Asks the active selection strategy for an ordered list of candidate accounts (default: `burn-rate`, which orders accounts by whose remaining quota would otherwise reset soonest).
 2. For the chosen account, refreshes the access token proactively if the JWT `exp` claim is within 60 s of now.
 3. Sends `Authorization: Bearer …` plus `ChatGPT-Account-ID: …` to `https://chatgpt.com/backend-api/codex/responses`.
 4. If the response is `401`, refreshes once and retries that account.

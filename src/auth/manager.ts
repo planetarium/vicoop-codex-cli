@@ -235,9 +235,12 @@ export async function loadAuthCandidates(
 
   const selector = getSelector(await getStrategyName());
   const byKey = new Map(enabled.map((r) => [r.meta.key, r]));
-  const selectables = selector.requiresUsage
-    ? await attachUsage(enabled)
-    : enabled.map(toSelectable);
+  // A usage fetch only matters when there is more than one account to order;
+  // with a single account the order is trivial, so skip the network round-trip.
+  const selectables =
+    selector.requiresUsage && enabled.length > 1
+      ? await attachUsage(enabled)
+      : enabled.map(toSelectable);
   const ordered = selector.order(selectables, ctx);
 
   const candidates: AccountCandidate[] = [];
