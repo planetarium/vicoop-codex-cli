@@ -17,7 +17,7 @@ original single-account CLI.
   enabled pool.
 - **Selection strategy** — decides the order in which accounts are tried for a
   request. The head of that order is the primary pick; the rest is the fallback
-  order. Default: `random`.
+  order. Default: `burn-rate`.
 - **Key** — a stable per-account id (from the ChatGPT `chatgpt_account_id` claim,
   falling back to the user id, then a hash of the refresh token). Shown in
   `accounts list`; usable as a selector.
@@ -165,17 +165,17 @@ Resolution order for the active strategy:
 1. `VICOOP_CODEX_ACCOUNT_STRATEGY` environment variable (highest priority —
    handy for `serve` deployments).
 2. The persisted `strategy` in `state.json` (set via `accounts strategy <name>`).
-3. Default: `random`.
+3. Default: `burn-rate`.
 
-An unknown strategy name falls back to `random` with a stderr warning, so a typo
+An unknown strategy name falls back to `burn-rate` with a stderr warning, so a typo
 never breaks calls.
 
 Built-in strategies:
 
 | name | behavior |
 | --- | --- |
-| `random` (default) | uniform shuffle of the enabled accounts |
-| `burn-rate` | "use-it-or-lose-it" — prefer the account whose remaining quota would otherwise reset soonest (see below) |
+| `burn-rate` (default) | "use-it-or-lose-it" — prefer the account whose remaining quota would otherwise reset soonest (see below) |
+| `random` | uniform shuffle of the enabled accounts |
 
 ## The `burn-rate` strategy
 

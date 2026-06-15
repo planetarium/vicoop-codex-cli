@@ -371,14 +371,14 @@ export async function writeUsageCache(key: string, entry: UsageCacheEntry): Prom
   await patchMeta(key, { usageCache: entry });
 }
 
-/** Effective selection strategy: env var wins, else persisted, else "random". */
+/** Effective selection strategy: env var wins, else persisted, else "burn-rate". */
 export async function getStrategyName(): Promise<string> {
   await ensureMigrated();
   const env = process.env[STRATEGY_ENV]?.trim();
   if (env) return env;
   const state = await readStateRaw();
   const persisted = state.strategy?.trim();
-  return persisted && persisted.length > 0 ? persisted : "random";
+  return persisted && persisted.length > 0 ? persisted : "burn-rate";
 }
 
 export async function setStrategyName(name: string): Promise<void> {

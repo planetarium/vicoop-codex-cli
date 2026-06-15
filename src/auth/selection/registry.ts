@@ -4,7 +4,9 @@ import { BurnRateSelector } from "./burn-rate.js";
 
 export type SelectorFactory = () => AccountSelector;
 
-export const DEFAULT_STRATEGY = "random";
+// Default policy. `burn-rate` is usage-aware ("use-it-or-lose-it"); `random` is
+// kept as a selectable alternative. Also the fallback for unknown strategy names.
+export const DEFAULT_STRATEGY = "burn-rate";
 
 const registry = new Map<string, SelectorFactory>();
 
@@ -25,7 +27,7 @@ export function hasStrategy(name: string): boolean {
   return registry.has(name);
 }
 
-registerSelector(DEFAULT_STRATEGY, () => new RandomSelector());
+registerSelector("random", () => new RandomSelector());
 registerSelector("burn-rate", () => new BurnRateSelector());
 
 /**
