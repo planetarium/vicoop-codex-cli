@@ -1,0 +1,22 @@
+vicoop-codex-cli
+Copyright 2025-2026 Planetarium
+
+This product includes software derived from OpenAI Codex
+(https://github.com/openai/codex), licensed under the Apache License,
+Version 2.0:
+
+    OpenAI Codex
+    Copyright 2025 OpenAI
+
+vicoop-codex-cli is a TypeScript reimplementation ("language port") of the
+OAuth sign-in and LLM-call subset of OpenAI Codex (codex-rs). The upstream
+Rust source has been ported and modified. This distribution does NOT include
+the upstream terminal UI, so the upstream Ratatui (MIT) attribution carried in
+the OpenAI Codex NOTICE does not pertain to this work and is omitted under
+Section 4(d) of the Apache License, Version 2.0.
+
+TRADEMARKS / AFFILIATION
+"Codex", "ChatGPT", and "OpenAI" are trademarks of OpenAI. This is an
+independent, unofficial project and is NOT affiliated with, endorsed by, or
+sponsored by OpenAI. The Apache License, Version 2.0 does not grant permission
+to use these trade names or trademarks (Section 6).
