@@ -91,7 +91,11 @@ function buildBody(req: RunRequest): unknown {
     body.prompt_cache_key = req.promptCacheKey;
   }
   if (req.reasoningEffort !== undefined) {
-    body.reasoning = { effort: req.reasoningEffort };
+    // Request a reasoning summary alongside the effort so the upstream
+    // `/responses` stream emits `response.reasoning_summary_text.delta`
+    // events. `summary: "auto"` only affects reasoning models; non-reasoning
+    // models ignore it.
+    body.reasoning = { effort: req.reasoningEffort, summary: "auto" };
   }
   return body;
 }
