@@ -259,6 +259,11 @@ export function chatCompletionsToUpstream(body: ChatCompletionsBody): UpstreamBu
       typeof body.reasoning_effort === "string"
         ? body.reasoning_effort
         : "medium",
+    // Ask upstream for a reasoning summary so the `/responses` stream emits
+    // `response.reasoning_summary_text.delta` events, which serve relays to
+    // the client as `delta.reasoning_content`. `summary: "auto"` only affects
+    // reasoning models; others ignore it.
+    summary: "auto",
   };
 
   const responseFormat = body.response_format;

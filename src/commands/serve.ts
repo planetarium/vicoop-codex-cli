@@ -44,8 +44,18 @@ export interface ServeCmdOptions {
 const ROUTE_PATH = "/v1/chat/completions";
 const USAGE_PATH = "/usage";
 
+// Minimal sink the streaming writers target. `http.ServerResponse` satisfies
+// this structurally; tests pass a lightweight fake to capture emitted frames.
+export interface StreamSink {
+  write(chunk: string): unknown;
+  end(chunk?: string): unknown;
+  writeHead(status: number, headers: Record<string, string>): unknown;
+  readonly writableEnded: boolean;
+  readonly headersSent: boolean;
+}
+
 function writeJsonError(
-  res: http.ServerResponse,
+  res: StreamSink,
   status: number,
   message: string,
   type = "api_error",
@@ -82,9 +92,9 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   return JSON.parse(raw);
 }
 
-async function streamChatCompletion(
+export async function streamChatCompletion(
   upstreamBody: ReadableStream<Uint8Array>,
-  res: http.ServerResponse,
+  res: StreamSink,
   requestedModel: string,
   includeUsage: boolean,
 ): Promise<void> {
@@ -94,6 +104,10 @@ async function streamChatCompletion(
   let roleSent = false;
   let hasToolCalls = false;
   let toolCallIndex = 0;
+  // Tracks whether we've emitted at least one reasoning-summary part, so the
+  // second and later parts get a "\n\n" separator. Kept independent of the
+  // role/content/finish bookkeeping — reasoning never affects finish reason.
+  let reasoningPartSeen = false;
   let finalUsage: CodexUsage | undefined;
   let finalStatus: string | undefined;
   let incompleteReason: string | undefined;
@@ -166,6 +180,27 @@ async function streamChatCompletion(
         },
       };
       writeChunk({ tool_calls: [toolCall] }, null);
+    } else if (
+      obj.type === "response.reasoning_summary_text.delta" &&
+      typeof obj.delta === "string"
+    ) {
+      // Relay the model's reasoning summary as `delta.reasoning_content`, the
+      // standard OpenAI reasoning-model streaming field. Reasoning rides
+      // alongside content and never leaks into `delta.content`; it is also
+      // deliberately excluded from the finish-reason bookkeeping (which keys
+      // only on output_text/tool_calls).
+      if (!roleSent) {
+        writeChunk({ role: "assistant", content: "" }, null);
+        roleSent = true;
+      }
+      reasoningPartSeen = true;
+      writeChunk({ reasoning_content: obj.delta }, null);
+    } else if (obj.type === "response.reasoning_summary_part.added") {
+      // Between reasoning-summary parts, emit a blank-line separator for
+      // readability — but only after the first part has already streamed.
+      if (reasoningPartSeen) {
+        writeChunk({ reasoning_content: "\n\n" }, null);
+      }
     } else if (obj.type === "response.completed") {
       finalUsage = obj.response?.usage;
       finalStatus = obj.response?.status;
