@@ -101,12 +101,13 @@ function buildBody(req: RunRequest): unknown {
 }
 
 /**
- * Absolute ceiling for a single `/responses` call. undici's inter-chunk idle
- * timer is disabled for Codex calls (see `http.ts`) so that long silent
- * reasoning gaps don't abort the stream; this deadline is what guards against a
- * genuinely stuck upstream. Kept just under the bridge client's per-task
- * timeout (10 min) so a stall surfaces here as a clean error before the bridge
- * gives up. Override with `VICOOP_CODEX_UPSTREAM_TIMEOUT_MS`.
+ * Absolute ceiling for a single `/responses` call. The runtime's inter-chunk
+ * idle timeout is disabled for that call (`backend.ts`, via Bun's
+ * `timeout: false`) so long silent reasoning gaps don't abort the stream; this
+ * deadline is what guards against a genuinely stuck upstream. Kept just under
+ * the bridge client's per-task timeout (10 min) so a stall surfaces here as a
+ * clean error before the bridge gives up. Override with
+ * `VICOOP_CODEX_UPSTREAM_TIMEOUT_MS`.
  */
 const UPSTREAM_DEADLINE_MS =
   Number(process.env.VICOOP_CODEX_UPSTREAM_TIMEOUT_MS) || 9 * 60 * 1000;

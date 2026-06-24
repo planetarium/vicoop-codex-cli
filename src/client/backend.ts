@@ -1,5 +1,4 @@
 import { loadAuthCandidates, type ActiveAuth } from "../auth/manager.js";
-import { codexDispatcher } from "./http.js";
 
 const CHATGPT_CODEX_API_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
@@ -50,17 +49,12 @@ async function fetchWithAuth(
   // `/responses` is bounded instead by the per-request absolute deadline
   // (`responses.ts#withDeadline`).
   //
-  // The two runtimes expose different knobs, and each ignores the other's:
-  //   - Node (undici): a `dispatcher` with `bodyTimeout: 0` (see `http.ts`).
-  //   - Bun: its native fetch idle timeout (fixed ~300s, throws
-  //     "The operation timed out.") is disabled with `timeout: false`.
-  // The compiled release binaries run on Bun, so the `timeout: false` branch is
-  // what actually takes effect in production; the dispatcher covers node/npm
-  // installs. Both are extensions to the DOM `RequestInit` type, hence the cast.
+  // The compiled release binaries run on Bun, whose native fetch has a fixed
+  // ~300s idle timeout (throws "The operation timed out."); `timeout: false`
+  // disables it. This is a Bun extension to the DOM `RequestInit` type (Node's
+  // fetch ignores the field), hence the cast.
   if (path === "/responses") {
-    const ext = reqInit as { dispatcher?: unknown; timeout?: boolean };
-    ext.dispatcher = codexDispatcher() as never;
-    ext.timeout = false;
+    (reqInit as { timeout?: boolean }).timeout = false;
   }
   return fetch(buildCodexBackendUrl(path, query), reqInit);
 }
