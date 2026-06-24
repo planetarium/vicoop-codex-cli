@@ -1,4 +1,5 @@
 import { loadAuthCandidates, type ActiveAuth } from "../auth/manager.js";
+import { codexDispatcher } from "./http.js";
 
 const CHATGPT_CODEX_API_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
@@ -38,10 +39,16 @@ async function fetchWithAuth(
   init: RequestInit = {},
   query?: URLSearchParams,
 ): Promise<Response> {
-  return fetch(buildCodexBackendUrl(path, query), {
+  const reqInit: RequestInit = {
     ...init,
     headers: buildCodexHeaders(auth, init.headers),
-  });
+    // `dispatcher` is undici's extension to RequestInit. The undici package's
+    // Dispatcher type and the `undici-types` one bundled with @types/node don't
+    // structurally unify, but the Agent is a valid dispatcher at runtime, so
+    // cast through `never` to satisfy the global fetch's typing.
+    dispatcher: codexDispatcher() as never,
+  };
+  return fetch(buildCodexBackendUrl(path, query), reqInit);
 }
 
 /**

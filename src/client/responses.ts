@@ -100,6 +100,26 @@ function buildBody(req: RunRequest): unknown {
   return body;
 }
 
+/**
+ * Absolute ceiling for a single `/responses` call. undici's inter-chunk idle
+ * timer is disabled for Codex calls (see `http.ts`) so that long silent
+ * reasoning gaps don't abort the stream; this deadline is what guards against a
+ * genuinely stuck upstream. Kept just under the bridge client's per-task
+ * timeout (10 min) so a stall surfaces here as a clean error before the bridge
+ * gives up. Override with `VICOOP_CODEX_UPSTREAM_TIMEOUT_MS`.
+ */
+const UPSTREAM_DEADLINE_MS =
+  Number(process.env.VICOOP_CODEX_UPSTREAM_TIMEOUT_MS) || 9 * 60 * 1000;
+
+/**
+ * Combine the caller's abort signal (if any) with an absolute upstream
+ * deadline, so the request is aborted when *either* fires.
+ */
+function withDeadline(signal?: AbortSignal): AbortSignal {
+  const deadline = AbortSignal.timeout(UPSTREAM_DEADLINE_MS);
+  return signal ? AbortSignal.any([signal, deadline]) : deadline;
+}
+
 export class ApiError extends Error {
   status: number;
   detail?: string;
@@ -137,7 +157,7 @@ export async function postUpstream(
         Accept: "text/event-stream",
       },
       body: JSON.stringify(body),
-      signal,
+      signal: withDeadline(signal),
     },
     undefined,
     opts,

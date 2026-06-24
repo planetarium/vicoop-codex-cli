@@ -112,6 +112,14 @@ export async function streamChatCompletion(
   let finalStatus: string | undefined;
   let incompleteReason: string | undefined;
 
+  // Track the last time we wrote anything downstream. While the upstream is
+  // silent (e.g. a reasoning model thinking before its first delta), we emit a
+  // periodic SSE comment so the consumer's idle/body timeout never trips on an
+  // otherwise-healthy long request. Comment lines (`:`-prefixed) are ignored by
+  // SSE parsers, so they never reach the model output.
+  let lastActivity = Date.now();
+  const HEARTBEAT_MS = 15_000;
+
   const writeChunk = (delta: Record<string, unknown>, finish: string | null) => {
     if (res.writableEnded) return;
     const chunk = {
@@ -122,123 +130,137 @@ export async function streamChatCompletion(
       choices: [{ index: 0, delta, finish_reason: finish }],
     };
     res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    lastActivity = Date.now();
   };
 
-  for await (const ev of parseSse(upstreamBody)) {
-    if (!ev.data || ev.data === "[DONE]") continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(ev.data);
-    } catch {
-      continue;
-    }
-    const obj = parsed as {
-      type?: string;
-      response?: {
-        id?: string;
-        model?: string;
-        usage?: CodexUsage;
-        status?: string;
-        incomplete_details?: { reason?: string } | null;
-      };
-      delta?: string;
-      item?: {
+  const heartbeat = setInterval(() => {
+    if (res.writableEnded) return;
+    if (Date.now() - lastActivity < HEARTBEAT_MS) return;
+    res.write(": heartbeat\n\n");
+    lastActivity = Date.now();
+  }, HEARTBEAT_MS);
+  // Don't let the keep-alive timer hold the process open on its own.
+  (heartbeat as unknown as { unref?: () => void }).unref?.();
+
+  try {
+    for await (const ev of parseSse(upstreamBody)) {
+      if (!ev.data || ev.data === "[DONE]") continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(ev.data);
+      } catch {
+        continue;
+      }
+      const obj = parsed as {
         type?: string;
-        call_id?: string;
-        id?: string;
-        name?: string;
-        arguments?: string;
+        response?: {
+          id?: string;
+          model?: string;
+          usage?: CodexUsage;
+          status?: string;
+          incomplete_details?: { reason?: string } | null;
+        };
+        delta?: string;
+        item?: {
+          type?: string;
+          call_id?: string;
+          id?: string;
+          name?: string;
+          arguments?: string;
+        };
+        error?: { message?: string };
       };
-      error?: { message?: string };
-    };
 
-    if (obj.type === "response.created" && obj.response) {
-      if (obj.response.id) chatId = makeChatId(obj.response.id);
-      if (obj.response.model) model = obj.response.model;
-    } else if (obj.type === "response.output_text.delta" && typeof obj.delta === "string") {
-      if (!roleSent) {
-        writeChunk({ role: "assistant", content: "" }, null);
-        roleSent = true;
+      if (obj.type === "response.created" && obj.response) {
+        if (obj.response.id) chatId = makeChatId(obj.response.id);
+        if (obj.response.model) model = obj.response.model;
+      } else if (obj.type === "response.output_text.delta" && typeof obj.delta === "string") {
+        if (!roleSent) {
+          writeChunk({ role: "assistant", content: "" }, null);
+          roleSent = true;
+        }
+        writeChunk({ content: obj.delta }, null);
+      } else if (obj.type === "response.output_item.done" && obj.item?.type === "function_call") {
+        hasToolCalls = true;
+        if (!roleSent) {
+          writeChunk({ role: "assistant", content: null }, null);
+          roleSent = true;
+        }
+        const toolCall = {
+          index: toolCallIndex++,
+          id:
+            obj.item.call_id ??
+            obj.item.id ??
+            `call_${randomUUID().replace(/-/g, "").slice(0, 16)}`,
+          type: "function",
+          function: {
+            name: obj.item.name ?? "",
+            arguments: obj.item.arguments ?? "",
+          },
+        };
+        writeChunk({ tool_calls: [toolCall] }, null);
+      } else if (
+        obj.type === "response.reasoning_summary_text.delta" &&
+        typeof obj.delta === "string"
+      ) {
+        // Relay the model's reasoning summary as `delta.reasoning_content`, the
+        // standard OpenAI reasoning-model streaming field. Reasoning rides
+        // alongside content and never leaks into `delta.content`; it is also
+        // deliberately excluded from the finish-reason bookkeeping (which keys
+        // only on output_text/tool_calls).
+        if (!roleSent) {
+          writeChunk({ role: "assistant", content: "" }, null);
+          roleSent = true;
+        }
+        reasoningPartSeen = true;
+        writeChunk({ reasoning_content: obj.delta }, null);
+      } else if (obj.type === "response.reasoning_summary_part.added") {
+        // Between reasoning-summary parts, emit a blank-line separator for
+        // readability — but only after the first part has already streamed.
+        if (reasoningPartSeen) {
+          writeChunk({ reasoning_content: "\n\n" }, null);
+        }
+      } else if (obj.type === "response.completed") {
+        finalUsage = obj.response?.usage;
+        finalStatus = obj.response?.status;
+        incompleteReason = obj.response?.incomplete_details?.reason;
+      } else if (obj.type === "response.failed" || obj.type === "error") {
+        const msg = obj.error?.message ?? "upstream stream failed";
+        logError(`stream ${obj.type}`, obj);
+        if (!res.headersSent) {
+          writeJsonError(res, 502, msg);
+        } else {
+          res.write(`data: ${JSON.stringify({ error: { message: msg, type: "api_error", code: null } })}\n\n`);
+          res.write("data: [DONE]\n\n");
+          res.end();
+        }
+        return;
       }
-      writeChunk({ content: obj.delta }, null);
-    } else if (obj.type === "response.output_item.done" && obj.item?.type === "function_call") {
-      hasToolCalls = true;
-      if (!roleSent) {
-        writeChunk({ role: "assistant", content: null }, null);
-        roleSent = true;
-      }
-      const toolCall = {
-        index: toolCallIndex++,
-        id:
-          obj.item.call_id ??
-          obj.item.id ??
-          `call_${randomUUID().replace(/-/g, "").slice(0, 16)}`,
-        type: "function",
-        function: {
-          name: obj.item.name ?? "",
-          arguments: obj.item.arguments ?? "",
-        },
-      };
-      writeChunk({ tool_calls: [toolCall] }, null);
-    } else if (
-      obj.type === "response.reasoning_summary_text.delta" &&
-      typeof obj.delta === "string"
-    ) {
-      // Relay the model's reasoning summary as `delta.reasoning_content`, the
-      // standard OpenAI reasoning-model streaming field. Reasoning rides
-      // alongside content and never leaks into `delta.content`; it is also
-      // deliberately excluded from the finish-reason bookkeeping (which keys
-      // only on output_text/tool_calls).
-      if (!roleSent) {
-        writeChunk({ role: "assistant", content: "" }, null);
-        roleSent = true;
-      }
-      reasoningPartSeen = true;
-      writeChunk({ reasoning_content: obj.delta }, null);
-    } else if (obj.type === "response.reasoning_summary_part.added") {
-      // Between reasoning-summary parts, emit a blank-line separator for
-      // readability — but only after the first part has already streamed.
-      if (reasoningPartSeen) {
-        writeChunk({ reasoning_content: "\n\n" }, null);
-      }
-    } else if (obj.type === "response.completed") {
-      finalUsage = obj.response?.usage;
-      finalStatus = obj.response?.status;
-      incompleteReason = obj.response?.incomplete_details?.reason;
-    } else if (obj.type === "response.failed" || obj.type === "error") {
-      const msg = obj.error?.message ?? "upstream stream failed";
-      logError(`stream ${obj.type}`, obj);
-      if (!res.headersSent) {
-        writeJsonError(res, 502, msg);
-      } else {
-        res.write(`data: ${JSON.stringify({ error: { message: msg, type: "api_error", code: null } })}\n\n`);
-        res.write("data: [DONE]\n\n");
-        res.end();
-      }
-      return;
     }
-  }
 
-  if (!chatId) chatId = makeChatId();
-  if (!roleSent) writeChunk({ role: "assistant", content: "" }, null);
+    if (!chatId) chatId = makeChatId();
+    if (!roleSent) writeChunk({ role: "assistant", content: "" }, null);
 
-  const finishReason: ChatFinishReason = determineFinishReason(
-    { status: finalStatus, incomplete_details: { reason: incompleteReason } },
-    hasToolCalls,
-  );
-  const finalChunk: Record<string, unknown> = {
-    id: chatId,
-    object: "chat.completion.chunk",
-    created,
-    model,
-    choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
-  };
-  if (finalUsage && includeUsage) {
-    finalChunk.usage = toChatCompletionUsage(finalUsage);
+    const finishReason: ChatFinishReason = determineFinishReason(
+      { status: finalStatus, incomplete_details: { reason: incompleteReason } },
+      hasToolCalls,
+    );
+    const finalChunk: Record<string, unknown> = {
+      id: chatId,
+      object: "chat.completion.chunk",
+      created,
+      model,
+      choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+    };
+    if (finalUsage && includeUsage) {
+      finalChunk.usage = toChatCompletionUsage(finalUsage);
+    }
+    res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
+    res.write("data: [DONE]\n\n");
+    res.end();
+  } finally {
+    clearInterval(heartbeat);
   }
-  res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
-  res.write("data: [DONE]\n\n");
-  res.end();
 }
 
 type PostResult =
