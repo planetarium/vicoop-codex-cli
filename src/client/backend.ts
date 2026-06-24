@@ -38,10 +38,25 @@ async function fetchWithAuth(
   init: RequestInit = {},
   query?: URLSearchParams,
 ): Promise<Response> {
-  return fetch(buildCodexBackendUrl(path, query), {
+  const reqInit: RequestInit = {
     ...init,
     headers: buildCodexHeaders(auth, init.headers),
-  });
+  };
+  // Only the long-lived streaming `/responses` call needs its inter-chunk idle
+  // timeout disabled (a reasoning model can stay silent for minutes before its
+  // first byte). Scope it to that path so short calls like `/models` keep a
+  // finite body timeout and can't hang forever after headers. A genuinely stuck
+  // `/responses` is bounded instead by the per-request absolute deadline
+  // (`responses.ts#withDeadline`).
+  //
+  // The compiled release binaries run on Bun, whose native fetch has a fixed
+  // ~300s idle timeout (throws "The operation timed out."); `timeout: false`
+  // disables it. This is a Bun extension to the DOM `RequestInit` type (Node's
+  // fetch ignores the field), hence the cast.
+  if (path === "/responses") {
+    (reqInit as { timeout?: boolean }).timeout = false;
+  }
+  return fetch(buildCodexBackendUrl(path, query), reqInit);
 }
 
 /**
