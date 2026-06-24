@@ -42,12 +42,26 @@ async function fetchWithAuth(
   const reqInit: RequestInit = {
     ...init,
     headers: buildCodexHeaders(auth, init.headers),
-    // `dispatcher` is undici's extension to RequestInit. The undici package's
-    // Dispatcher type and the `undici-types` one bundled with @types/node don't
-    // structurally unify, but the Agent is a valid dispatcher at runtime, so
-    // cast through `never` to satisfy the global fetch's typing.
-    dispatcher: codexDispatcher() as never,
   };
+  // Only the long-lived streaming `/responses` call needs its inter-chunk idle
+  // timeout disabled (a reasoning model can stay silent for minutes before its
+  // first byte). Scope it to that path so short calls like `/models` keep a
+  // finite body timeout and can't hang forever after headers. A genuinely stuck
+  // `/responses` is bounded instead by the per-request absolute deadline
+  // (`responses.ts#withDeadline`).
+  //
+  // The two runtimes expose different knobs, and each ignores the other's:
+  //   - Node (undici): a `dispatcher` with `bodyTimeout: 0` (see `http.ts`).
+  //   - Bun: its native fetch idle timeout (fixed ~300s, throws
+  //     "The operation timed out.") is disabled with `timeout: false`.
+  // The compiled release binaries run on Bun, so the `timeout: false` branch is
+  // what actually takes effect in production; the dispatcher covers node/npm
+  // installs. Both are extensions to the DOM `RequestInit` type, hence the cast.
+  if (path === "/responses") {
+    const ext = reqInit as { dispatcher?: unknown; timeout?: boolean };
+    ext.dispatcher = codexDispatcher() as never;
+    ext.timeout = false;
+  }
   return fetch(buildCodexBackendUrl(path, query), reqInit);
 }
 

@@ -1,20 +1,22 @@
 import { Agent, type Dispatcher } from "undici";
 
 /**
+ * Node-runtime knob for the `/responses` idle timeout.
+ *
  * Node's global `fetch` (powered by undici) applies a default `bodyTimeout` of
  * 300_000 ms (5 minutes): if the upstream sends no body bytes for five minutes
- * it aborts the request with a "terminated" / "operation timed out" error. The
- * ChatGPT `/responses` SSE stream can stay completely silent for several
- * minutes while a reasoning model thinks before emitting its first delta, so
- * that default cuts long reasoning requests off mid-flight (observed as
- * "serve stream interrupted: The operation timed out" on the bridge client).
+ * it aborts the request. The ChatGPT `/responses` SSE stream can stay silent
+ * for several minutes while a reasoning model thinks before its first delta, so
+ * that default cut long reasoning requests off mid-flight. We disable the
+ * inter-chunk idle timer (`bodyTimeout: 0`) and keep a finite `headersTimeout`
+ * so a connection that never produces *any* response still fails fast; the
+ * overall ceiling is enforced separately by an explicit AbortSignal deadline
+ * (`responses.ts#withDeadline`).
  *
- * We therefore route Codex backend calls through a dedicated dispatcher with
- * the inter-chunk idle timer disabled (`bodyTimeout: 0`). A non-zero
- * `headersTimeout` is kept so a connection that never produces *any* response
- * still fails fast, and the overall ceiling is enforced separately by an
- * explicit AbortSignal deadline on the streaming request (see
- * `responses.ts#withDeadline`).
+ * NOTE: this only affects the Node runtime (source / npm installs). The
+ * compiled release binaries run on **Bun**, whose `fetch` ignores undici's
+ * `dispatcher`; Bun's own ~300s idle timeout is disabled with `timeout: false`
+ * at the call site (`backend.ts`). Each runtime honors only its own knob.
  */
 let dispatcher: Agent | undefined;
 
