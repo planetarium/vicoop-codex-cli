@@ -69,11 +69,24 @@ function compareVersions(a: string, b: string): number {
   return pa.pre > pb.pre ? 1 : -1;
 }
 
-async function fetchLatestRelease(): Promise<ReleaseInfo> {
+/**
+ * GitHub authentication headers derived from the environment. When `GITHUB_TOKEN`
+ * (or `GH_TOKEN`) is set, requests are authenticated so they benefit from the
+ * 5000 req/hr limit instead of the 60 req/hr unauthenticated quota. The token is
+ * only sent to GitHub's own hosts — `fetch` strips the `Authorization` header on
+ * cross-origin redirects (e.g. to the asset CDN), so it never leaks to S3.
+ */
+export function githubAuthHeaders(): Record<string, string> {
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export async function fetchLatestRelease(): Promise<ReleaseInfo> {
   const res = await fetch(LATEST_RELEASE_URL, {
     headers: {
       Accept: "application/vnd.github+json",
       "User-Agent": "vicoop-codex-cli",
+      ...githubAuthHeaders(),
     },
   });
   if (res.status === 404) {
@@ -87,7 +100,7 @@ async function fetchLatestRelease(): Promise<ReleaseInfo> {
 
 async function download(url: string): Promise<Buffer> {
   const res = await fetch(url, {
-    headers: { "User-Agent": "vicoop-codex-cli" },
+    headers: { "User-Agent": "vicoop-codex-cli", ...githubAuthHeaders() },
     redirect: "follow",
   });
   if (!res.ok) {
