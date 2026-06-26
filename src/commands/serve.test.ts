@@ -182,6 +182,65 @@ test("streamChatCompletion keeps finish_reason=tool_calls with reasoning present
   assert.equal(finalChoice.finish_reason, "tool_calls");
 });
 
+test("streamChatCompletion maps response.incomplete(max_output_tokens) to finish_reason=length with usage", async () => {
+  const sink = fakeSink();
+  await streamChatCompletion(
+    sseStream([
+      { type: "response.created", response: { id: "resp_inc", model: "gpt-5.5" } },
+      // The model spent its whole output budget reasoning and emitted no
+      // output_text — the exact empty-response failure mode. Upstream closes
+      // with `response.incomplete`, not `response.completed`.
+      { type: "response.reasoning_summary_text.delta", delta: "thinking hard" },
+      {
+        type: "response.incomplete",
+        response: {
+          status: "incomplete",
+          incomplete_details: { reason: "max_output_tokens" },
+          usage: { input_tokens: 400000, output_tokens: 8000, total_tokens: 408000 },
+        },
+      },
+    ]),
+    sink,
+    "gpt-5.5",
+    true,
+  );
+
+  const chunks = parseChunks(sink.frames);
+  const final = chunks[chunks.length - 1];
+  const finalChoice = (final.choices as Array<{ finish_reason: unknown }>)[0];
+  // Was previously mislabeled "stop" with no usage — the empty-response bug.
+  assert.equal(finalChoice.finish_reason, "length");
+  assert.deepEqual(final.usage, {
+    prompt_tokens: 400000,
+    completion_tokens: 8000,
+    total_tokens: 408000,
+  });
+});
+
+test("streamChatCompletion maps response.incomplete(content_filter) to finish_reason=content_filter", async () => {
+  const sink = fakeSink();
+  await streamChatCompletion(
+    sseStream([
+      { type: "response.created", response: { id: "resp_cf", model: "gpt-5.5" } },
+      {
+        type: "response.incomplete",
+        response: {
+          status: "incomplete",
+          incomplete_details: { reason: "content_filter" },
+        },
+      },
+    ]),
+    sink,
+    "gpt-5.5",
+    true,
+  );
+
+  const chunks = parseChunks(sink.frames);
+  const final = chunks[chunks.length - 1];
+  const finalChoice = (final.choices as Array<{ finish_reason: unknown }>)[0];
+  assert.equal(finalChoice.finish_reason, "content_filter");
+});
+
 test("chatCompletionsToUpstream requests reasoning.summary=auto", async () => {
   const { chatCompletionsToUpstream } = await import("../translate/chat-completions.js");
   const { upstream } = chatCompletionsToUpstream({

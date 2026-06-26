@@ -220,7 +220,17 @@ export async function streamChatCompletion(
         if (reasoningPartSeen) {
           writeChunk({ reasoning_content: "\n\n" }, null);
         }
-      } else if (obj.type === "response.completed") {
+      } else if (obj.type === "response.completed" || obj.type === "response.incomplete") {
+        // `response.incomplete` is a terminal event too — the model stopped
+        // short (e.g. `max_output_tokens` reached while reasoning, or a
+        // content filter) and the Responses API closes the stream with it
+        // instead of `response.completed`. It carries the same `status` /
+        // `incomplete_details.reason` / `usage` shape. Capturing it here is
+        // what lets `determineFinishReason` map it to `length`/`content_filter`
+        // AND lets the real `usage` flow downstream. Without this branch an
+        // incomplete turn fell through with `finalStatus`/`finalUsage` unset,
+        // so it was emitted as a misleading `finish_reason:"stop"` with no
+        // usage chunk — surfacing to callers as an empty, $0-billed response.
         finalUsage = obj.response?.usage;
         finalStatus = obj.response?.status;
         incompleteReason = obj.response?.incomplete_details?.reason;
