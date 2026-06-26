@@ -91,8 +91,13 @@ export function determineFinishReason(
   if (hasToolCalls) return "tool_calls";
   if (finalResponse.status === "incomplete") {
     const reason = finalResponse.incomplete_details?.reason;
-    if (reason === "max_output_tokens") return "length";
     if (reason === "content_filter") return "content_filter";
+    // `max_output_tokens` and any other (or absent) incomplete reason mean the
+    // generation was truncated, not a clean stop. Map them to `length` — the
+    // closest Chat Completions semantic — so an incomplete turn is never
+    // mislabeled `stop`. Reporting `stop` here is exactly the bug that made a
+    // budget-exhausted reasoning turn look like a normal empty completion.
+    return "length";
   }
   return "stop";
 }
@@ -412,7 +417,16 @@ export async function collectChatCompletion(
     if (obj.type === "response.output_item.done" && obj.item !== undefined) {
       const idx = typeof obj.output_index === "number" ? obj.output_index : 0;
       outputItems[idx] = obj.item;
-    } else if (obj.type === "response.completed" && obj.response) {
+    } else if (
+      (obj.type === "response.completed" || obj.type === "response.incomplete") &&
+      obj.response
+    ) {
+      // `response.incomplete` is a terminal too (truncated/filtered turn). Treat
+      // it like `response.completed`: keep the final response so its `usage` and
+      // `status` ("incomplete") reach `buildChatCompletion`, which maps the
+      // finish reason to `length`/`content_filter`. Previously an incomplete
+      // turn left `finalResponse` null and fell through to a spurious 502
+      // "no completed response received".
       finalResponse = obj.response;
     } else if (obj.type === "response.failed" || obj.type === "error") {
       const innerErr =
