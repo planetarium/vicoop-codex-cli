@@ -2,7 +2,11 @@ import { loadAuthCandidates, type ActiveAuth } from "../auth/manager.js";
 
 const CHATGPT_CODEX_API_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
-export const CODEX_BACKEND_CLIENT_VERSION = "0.133.0";
+// Bumped 0.133.0 -> 0.145.0: the ChatGPT Codex backend gates newer model slugs
+// behind a minimum client_version. 0.133.0/0.140.0 only expose up to gpt-5.5;
+// 0.145.0 is the minimal version at which the gpt-5.6 family (gpt-5.6-sol,
+// gpt-5.6-terra, gpt-5.6-luna) becomes available from GET /models.
+export const CODEX_BACKEND_CLIENT_VERSION = "0.145.0";
 
 export type CodexBackendPath = "/responses" | "/models";
 
