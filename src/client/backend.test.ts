@@ -19,7 +19,13 @@ process.env.VICOOP_CODEX_ACCOUNT_STRATEGY = "test-keyorder";
 
 // Imported after env is set; account-store reads VICOOP_CODEX_HOME lazily.
 const { upsertAccount } = await import("../auth/account-store.js");
-const { fetchCodexBackend, isFallbackWorthyStatus } = await import("./backend.js");
+const {
+  fetchCodexBackend,
+  isFallbackWorthyStatus,
+  codexUserAgent,
+  buildCodexHeaders,
+  CODEX_BACKEND_CLIENT_VERSION,
+} = await import("./backend.js");
 type AuthFile = import("../auth/store.js").AuthFile;
 
 function b64url(obj: unknown): string {
@@ -107,6 +113,34 @@ test("onAccount reports the account whose response is returned (post-fallback)",
   assert.equal(res.status, 200);
   assert.equal(used?.key, "bbb"); // not the 429'd "aaa"
   assert.equal(used?.email, "b@example.com");
+});
+
+test("codexUserAgent carries the codex_cli_rs/<version> gate prefix (unlocks gpt-5.6-luna)", () => {
+  const ua = codexUserAgent();
+  // The ChatGPT Codex backend only routes gpt-5.6-luna to a live engine when
+  // the UA prefix matches the official CLI signature; a stale/plain UA 404s.
+  // (openai/codex#31967) Guard the exact prefix + version pinning here.
+  assert.equal(
+    ua.startsWith(`codex_cli_rs/${CODEX_BACKEND_CLIENT_VERSION} `),
+    true,
+    `UA must start with codex_cli_rs/<version>, got: ${ua}`,
+  );
+  // Keep honest vicoop attribution in the suffix (the gate ignores it).
+  assert.match(ua, /vicoop-codex-cli\//);
+});
+
+test("buildCodexHeaders sends the codex_cli_rs UA + originator pair", () => {
+  const headers = buildCodexHeaders({
+    accessToken: "tok",
+    accountId: "acct-1",
+  } as never);
+  assert.equal(headers.get("originator"), "codex_cli_rs");
+  assert.equal(headers.get("User-Agent"), codexUserAgent());
+  assert.equal(
+    headers.get("User-Agent")?.startsWith("codex_cli_rs/"),
+    true,
+    "originator+UA must both present the codex_cli_rs identity (AND-gate)",
+  );
 });
 
 test("isFallbackWorthyStatus policy", () => {
