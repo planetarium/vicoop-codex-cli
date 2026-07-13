@@ -8,6 +8,12 @@ export { CODEX_BACKEND_CLIENT_VERSION };
 export interface CodexModel {
   id: string;
   name?: string;
+  // Effective context window in tokens, as reported by the ChatGPT Codex
+  // backend. Surfaced so downstream consumers (e.g. the vicoop-bridge
+  // openai-compat/v1 `contextWindow` advertise) can read a model's window
+  // without a hardcoded table. Omitted when the backend doesn't report a
+  // positive integer.
+  context_window?: number;
   service_tiers?: Array<{
     id?: string;
     name?: string;
@@ -25,10 +31,12 @@ interface RawCodexModel {
   id?: unknown;
   slug?: unknown;
   name?: unknown;
+  context_window?: unknown;
   service_tiers?: unknown;
 }
 
-function normalizeModel(raw: RawCodexModel): CodexModel | null {
+// Exported for unit tests.
+export function normalizeModel(raw: RawCodexModel): CodexModel | null {
   const id =
     typeof raw.slug === "string"
       ? raw.slug
@@ -41,6 +49,15 @@ function normalizeModel(raw: RawCodexModel): CodexModel | null {
 
   const out: CodexModel = { id };
   if (typeof raw.name === "string" && raw.name !== id) out.name = raw.name;
+  // Positive-integer guard so a missing / zero / negative / fractional value
+  // never surfaces as a bogus window.
+  if (
+    typeof raw.context_window === "number" &&
+    Number.isInteger(raw.context_window) &&
+    raw.context_window > 0
+  ) {
+    out.context_window = raw.context_window;
+  }
   if (Array.isArray(raw.service_tiers)) {
     out.service_tiers = raw.service_tiers
       .filter((tier): tier is Record<string, unknown> => tier && typeof tier === "object")
