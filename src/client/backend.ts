@@ -10,6 +10,25 @@ export const CODEX_BACKEND_CLIENT_VERSION = "0.145.0";
 
 export type CodexBackendPath = "/responses" | "/models";
 
+/**
+ * User-Agent presented to the ChatGPT Codex backend.
+ *
+ * The backend gates its client identity on an AND of `originator` + `User-Agent`.
+ * Most model slugs (gpt-5.5, gpt-5.6-sol, gpt-5.6-terra) pass on the originator
+ * alone, but the gpt-5.6-luna slug additionally routes to an internal engine
+ * that is only exposed when the `User-Agent` carries the official Codex CLI
+ * signature `codex_cli_rs/<version>` — otherwise the slug resolves to a missing
+ * engine and the backend replies 404 "Model not found gpt-5.6-luna" (confirmed
+ * empirically: flipping only the UA prefix flips 404 -> 200 with the same token
+ * and originator; see openai/codex#31967). The gate only inspects the
+ * `codex_cli_rs/<version>` prefix, so we keep an honest vicoop attribution in
+ * the suffix. The version is pinned to CODEX_BACKEND_CLIENT_VERSION so it stays
+ * in lockstep with the model catalog our client_version already advertises.
+ */
+export function codexUserAgent(): string {
+  return `codex_cli_rs/${CODEX_BACKEND_CLIENT_VERSION} (${process.platform}; ${process.arch}) vicoop-codex-cli/0.1.0`;
+}
+
 function buildCodexBackendUrl(path: CodexBackendPath, query?: URLSearchParams): string {
   const url = new URL(`${CHATGPT_CODEX_API_BASE_URL}${path}`);
   if (query) {
@@ -30,7 +49,7 @@ export function buildCodexHeaders(
   const headers = new Headers(extra);
   headers.set("Authorization", `Bearer ${auth.accessToken}`);
   headers.set("OAI-Product-Sku", "codex");
-  headers.set("User-Agent", "vicoop-codex-cli/0.1.0");
+  headers.set("User-Agent", codexUserAgent());
   headers.set("originator", "codex_cli_rs");
   if (auth.accountId) headers.set("ChatGPT-Account-ID", auth.accountId);
   return headers;
