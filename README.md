@@ -276,6 +276,19 @@ src/
 
 Zero runtime dependencies — only `typescript` and `@types/node` at build time.
 
+### Upstream diagnostics
+
+The raw ChatGPT `/responses` call is instrumented on stderr (tagged `[upstream]`)
+with per-request timing — `start` → `headers` (status + time-to-headers) →
+`first_byte` → `end`/`error`/`cancel` (with byte/chunk totals). Because these
+lines observe the raw upstream bytes (before any downstream heartbeat comments),
+an `error` with `firstByte:false, bytes:0` is direct proof the backend produced
+nothing (a wedged/silent upstream) rather than merely streaming slowly. Disable
+with `VICOOP_CODEX_UPSTREAM_LOG=0`.
+
+The absolute ceiling for a single `/responses` call is `VICOOP_CODEX_UPSTREAM_TIMEOUT_MS`
+(default 9 min); a stuck upstream is aborted at that deadline.
+
 ## Releasing
 
 Releases are **tag-driven** and fully automated by
