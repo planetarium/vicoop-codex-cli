@@ -283,8 +283,13 @@ with per-request timing — `start` → `headers` (status + time-to-headers) →
 `first_byte` → `end`/`error`/`cancel` (with byte/chunk totals). Because these
 lines observe the raw upstream bytes (before any downstream heartbeat comments),
 an `error` with `firstByte:false, bytes:0` is direct proof the backend produced
-nothing (a wedged/silent upstream) rather than merely streaming slowly. Disable
-with `VICOOP_CODEX_UPSTREAM_LOG=0`.
+nothing (a wedged/silent upstream) rather than merely streaming slowly.
+
+Sinks: stderr (on by default, disable with `VICOOP_CODEX_UPSTREAM_LOG=0`) and,
+when `VICOOP_CODEX_UPSTREAM_LOG_FILE=/path/to/upstream.log` is set, an append-only
+file. Prefer the file sink under the bridge: `vicoop-client` spawns `vicoop-codex
+serve` as a child and captures its stdio, so stderr lines do **not** reach
+`journalctl` there.
 
 The absolute ceiling for a single `/responses` call is `VICOOP_CODEX_UPSTREAM_TIMEOUT_MS`
 (default 9 min); a stuck upstream is aborted at that deadline.
