@@ -67,6 +67,36 @@ function writeJsonError(
   res.end(JSON.stringify({ error: { message, type, code } }));
 }
 
+// Minimal event-source shape wired for client-disconnect detection. Node's
+// `http.IncomingMessage` / `http.ServerResponse` satisfy it structurally; tests
+// pass lightweight EventEmitters.
+interface CloseSource {
+  on(event: string, listener: () => void): unknown;
+}
+
+/**
+ * Return an AbortSignal that fires when the client disconnects *before* the
+ * response has finished — so an abandoned request can abort the upstream
+ * `/responses` fetch (stopping foreground generation and saving quota) instead
+ * of running to completion. A normal end-of-response close is ignored via the
+ * `writableEnded` guard, so this never aborts a request we already answered.
+ */
+export function wireClientAbort(
+  req: CloseSource,
+  res: CloseSource & { readonly writableEnded: boolean },
+): AbortSignal {
+  const controller = new AbortController();
+  const abortIfPremature = () => {
+    if (!res.writableEnded) controller.abort(new Error("client disconnected"));
+  };
+  // `aborted` (Node <16 compat) + `close` cover a mid-request socket teardown;
+  // `res` close catches a downstream reader that goes away while we stream.
+  req.on("aborted", abortIfPremature);
+  req.on("close", abortIfPremature);
+  res.on("close", abortIfPremature);
+  return controller.signal;
+}
+
 function logError(label: string, detail?: unknown): void {
   const time = new Date().toISOString();
   let body = "";
@@ -294,6 +324,7 @@ async function postUpstreamWithHeal(
   body: ChatCompletionsBody,
   initialModel: string,
   usingDefault: boolean,
+  signal?: AbortSignal,
 ): Promise<PostResult> {
   body.model = initialModel;
   const { upstream, dropped } = chatCompletionsToUpstream(body);
@@ -305,7 +336,7 @@ async function postUpstreamWithHeal(
     (upstream as Record<string, unknown>).model = currentModel;
     let res: Response;
     try {
-      res = await postUpstream(upstream);
+      res = await postUpstream(upstream, signal);
     } catch (err) {
       return { kind: "threw", err };
     }
@@ -376,7 +407,19 @@ async function handleChatCompletions(
 
   const clientWantsStream = body.stream === true;
 
-  const result = await postUpstreamWithHeal(body, model, usingDefault);
+  // Propagate a premature client disconnect to the upstream `/responses` fetch:
+  // when the caller (vicoop-client) abandons the request it closes this socket,
+  // and without this the upstream call would otherwise run to full completion,
+  // wasting quota. The caller already passes its A2A task signal to its own
+  // fetch, so an abandoned task reliably closes the socket here.
+  const clientSignal = wireClientAbort(req, res);
+
+  const result = await postUpstreamWithHeal(
+    body,
+    model,
+    usingDefault,
+    clientSignal,
+  );
   if (result.kind === "threw") {
     const err = result.err;
     if (err instanceof NotAuthenticatedError) {
