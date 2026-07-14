@@ -140,29 +140,151 @@ async function readErrorBody(res: Response): Promise<string> {
   }
 }
 
+// ── Upstream instrumentation ────────────────────────────────────────────────
+// Structured stderr logging of the raw ChatGPT `/responses` call: request
+// start, response headers (status + time-to-headers), the first upstream byte,
+// and stream end/abort with byte totals. This is the ONLY place that observes
+// the RAW upstream bytes — the `: a2a-heartbeat` liveness comments are injected
+// by the downstream serve/A2A layer, NOT here — so an `error`/`end` phase with
+// `firstByte:false, bytes:0` is direct proof the backend produced nothing
+// (distinguishing a genuinely silent upstream from a slow-but-streaming one).
+// Lines are tagged `[upstream]` for `journalctl`/log grepping; the bridge
+// captures this process's stderr, so they land next to the task lifecycle.
+// On by default; disable with VICOOP_CODEX_UPSTREAM_LOG=0.
+const UPSTREAM_LOG_ENABLED = !/^(0|off|false|no)$/i.test(
+  process.env.VICOOP_CODEX_UPSTREAM_LOG ?? "",
+);
+let upstreamSeq = 0;
+
+function logUpstream(fields: Record<string, unknown>): void {
+  if (!UPSTREAM_LOG_ENABLED) return;
+  try {
+    process.stderr.write(
+      `[upstream] ${JSON.stringify({ ts: new Date().toISOString(), ...fields })}\n`,
+    );
+  } catch {
+    // Observational only — never let logging break a request.
+  }
+}
+
+/**
+ * Wrap an upstream body stream to log first-byte latency, byte/chunk totals,
+ * and how it ended (clean close vs abort/timeout/cancel) — WITHOUT altering the
+ * bytes (each chunk is enqueued verbatim). A `first_byte` line that never
+ * appears before an `error` line is the signature of a wedged/silent upstream.
+ */
+function instrumentBody(
+  body: ReadableStream<Uint8Array>,
+  seq: number,
+  startedAt: number,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let bytes = 0;
+  let chunks = 0;
+  let firstByte = false;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          logUpstream({ seq, phase: "end", ms: Date.now() - startedAt, bytes, chunks, firstByte });
+          controller.close();
+          return;
+        }
+        if (!firstByte) {
+          firstByte = true;
+          logUpstream({ seq, phase: "first_byte", ms: Date.now() - startedAt, bytes: value.byteLength });
+        }
+        bytes += value.byteLength;
+        chunks += 1;
+        controller.enqueue(value);
+      } catch (err) {
+        logUpstream({
+          seq,
+          phase: "error",
+          ms: Date.now() - startedAt,
+          bytes,
+          chunks,
+          firstByte,
+          err: (err as Error)?.message ?? String(err),
+        });
+        controller.error(err);
+      }
+    },
+    cancel(reason) {
+      logUpstream({
+        seq,
+        phase: "cancel",
+        ms: Date.now() - startedAt,
+        bytes,
+        chunks,
+        firstByte,
+        reason: (reason as Error)?.message ?? String(reason ?? ""),
+      });
+      return reader.cancel(reason);
+    },
+  });
+}
+
 /**
  * POST raw body to the ChatGPT Codex backend with auth + one-shot refresh on 401.
- * Returns the raw upstream Response without consuming its body.
+ * Returns the upstream Response without consuming its body. When the response is
+ * a streaming success its body is wrapped with `instrumentBody` so raw upstream
+ * timing (first byte, totals, abort cause) is logged; the bytes are unchanged.
  */
 export async function postUpstream(
   body: unknown,
   signal?: AbortSignal,
   opts?: FetchCodexOptions,
 ): Promise<Response> {
-  return fetchCodexBackend(
-    "/responses",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
+  const seq = ++upstreamSeq;
+  const startedAt = Date.now();
+  logUpstream({ seq, phase: "start", deadlineMs: UPSTREAM_DEADLINE_MS });
+  let res: Response;
+  try {
+    res = await fetchCodexBackend(
+      "/responses",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify(body),
+        signal: withDeadline(signal),
       },
-      body: JSON.stringify(body),
-      signal: withDeadline(signal),
-    },
-    undefined,
-    opts,
-  );
+      undefined,
+      opts,
+    );
+  } catch (err) {
+    // Aborted/failed before response headers (e.g. deadline fired during connect).
+    logUpstream({
+      seq,
+      phase: "error",
+      when: "pre_headers",
+      ms: Date.now() - startedAt,
+      err: (err as Error)?.message ?? String(err),
+    });
+    throw err;
+  }
+  logUpstream({
+    seq,
+    phase: "headers",
+    ms: Date.now() - startedAt,
+    status: res.status,
+    ok: res.ok,
+    model: res.headers.get("openai-model") ?? undefined,
+    reqId:
+      res.headers.get("x-request-id") ??
+      res.headers.get("cf-ray") ??
+      undefined,
+  });
+  if (!res.ok || !res.body) return res;
+  return new Response(instrumentBody(res.body, seq, startedAt), {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+  });
 }
 
 export async function runResponse(
