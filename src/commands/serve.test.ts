@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { streamChatCompletion, type StreamSink } from "./serve.js";
+import { EventEmitter } from "node:events";
+import { streamChatCompletion, wireClientAbort, type StreamSink } from "./serve.js";
 
 // Build a ReadableStream<Uint8Array> from a list of Responses-API SSE events.
 // Each event is serialized as a `data: <json>\n\n` frame, matching the upstream
@@ -239,6 +240,36 @@ test("streamChatCompletion maps response.incomplete(content_filter) to finish_re
   const final = chunks[chunks.length - 1];
   const finalChoice = (final.choices as Array<{ finish_reason: unknown }>)[0];
   assert.equal(finalChoice.finish_reason, "content_filter");
+});
+
+test("wireClientAbort aborts on a premature client close (before response ends)", () => {
+  const req = new EventEmitter();
+  const res = Object.assign(new EventEmitter(), { writableEnded: false });
+  const signal = wireClientAbort(req, res as never);
+
+  assert.equal(signal.aborted, false);
+  req.emit("close"); // client vanished mid-request
+  assert.equal(signal.aborted, true, "a premature close must abort the upstream signal");
+});
+
+test("wireClientAbort does NOT abort when the response already finished", () => {
+  const req = new EventEmitter();
+  const res = Object.assign(new EventEmitter(), { writableEnded: true });
+  const signal = wireClientAbort(req, res as never);
+
+  // Normal end-of-response: res 'close' fires after res.end(), writableEnded=true.
+  res.emit("close");
+  req.emit("close");
+  assert.equal(signal.aborted, false, "a normal completion must not abort");
+});
+
+test("wireClientAbort reacts to the legacy req 'aborted' event too", () => {
+  const req = new EventEmitter();
+  const res = Object.assign(new EventEmitter(), { writableEnded: false });
+  const signal = wireClientAbort(req, res as never);
+
+  req.emit("aborted");
+  assert.equal(signal.aborted, true);
 });
 
 test("chatCompletionsToUpstream requests reasoning.summary=auto", async () => {

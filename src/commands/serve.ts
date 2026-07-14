@@ -1,7 +1,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { parseSse } from "../client/sse.js";
-import { postUpstream } from "../client/responses.js";
+import { postUpstream, ApiError } from "../client/responses.js";
 import { NotAuthenticatedError } from "../auth/manager.js";
 import { readAuth } from "../auth/store.js";
 import {
@@ -65,6 +65,36 @@ function writeJsonError(
     res.writeHead(status, { "content-type": "application/json" });
   }
   res.end(JSON.stringify({ error: { message, type, code } }));
+}
+
+// Minimal event-source shape wired for client-disconnect detection. Node's
+// `http.IncomingMessage` / `http.ServerResponse` satisfy it structurally; tests
+// pass lightweight EventEmitters.
+interface CloseSource {
+  on(event: string, listener: () => void): unknown;
+}
+
+/**
+ * Return an AbortSignal that fires when the client disconnects *before* the
+ * response has finished — so an abandoned request can abort the upstream
+ * `/responses` fetch (stopping foreground generation and saving quota) instead
+ * of running to completion. A normal end-of-response close is ignored via the
+ * `writableEnded` guard, so this never aborts a request we already answered.
+ */
+export function wireClientAbort(
+  req: CloseSource,
+  res: CloseSource & { readonly writableEnded: boolean },
+): AbortSignal {
+  const controller = new AbortController();
+  const abortIfPremature = () => {
+    if (!res.writableEnded) controller.abort(new Error("client disconnected"));
+  };
+  // `aborted` (Node <16 compat) + `close` cover a mid-request socket teardown;
+  // `res` close catches a downstream reader that goes away while we stream.
+  req.on("aborted", abortIfPremature);
+  req.on("close", abortIfPremature);
+  res.on("close", abortIfPremature);
+  return controller.signal;
 }
 
 function logError(label: string, detail?: unknown): void {
@@ -294,6 +324,7 @@ async function postUpstreamWithHeal(
   body: ChatCompletionsBody,
   initialModel: string,
   usingDefault: boolean,
+  signal?: AbortSignal,
 ): Promise<PostResult> {
   body.model = initialModel;
   const { upstream, dropped } = chatCompletionsToUpstream(body);
@@ -305,7 +336,7 @@ async function postUpstreamWithHeal(
     (upstream as Record<string, unknown>).model = currentModel;
     let res: Response;
     try {
-      res = await postUpstream(upstream);
+      res = await postUpstream(upstream, signal);
     } catch (err) {
       return { kind: "threw", err };
     }
@@ -376,12 +407,31 @@ async function handleChatCompletions(
 
   const clientWantsStream = body.stream === true;
 
-  const result = await postUpstreamWithHeal(body, model, usingDefault);
+  // Propagate a premature client disconnect to the upstream `/responses` fetch:
+  // when the caller (vicoop-client) abandons the request it closes this socket,
+  // and without this the upstream call would otherwise run to full completion,
+  // wasting quota. The caller already passes its A2A task signal to its own
+  // fetch, so an abandoned task reliably closes the socket here.
+  const clientSignal = wireClientAbort(req, res);
+
+  const result = await postUpstreamWithHeal(
+    body,
+    model,
+    usingDefault,
+    clientSignal,
+  );
   if (result.kind === "threw") {
     const err = result.err;
     if (err instanceof NotAuthenticatedError) {
       logError("not authenticated", err);
       writeJsonError(res, 401, err.message, "authentication_error");
+    } else if (err instanceof ApiError) {
+      // Surface the status the client set deliberately (e.g. 504
+      // `upstream_stalled` from the retry-on-stall watchdog) instead of
+      // flattening every throw to 502 — an operator triaging a stall by HTTP
+      // status should see 504 Gateway Timeout, not 502 Bad Gateway.
+      logError(`upstream fetch threw (HTTP ${err.status})`, err);
+      writeJsonError(res, err.status || 502, err.message ?? "upstream error", "api_error", err.detail ?? null);
     } else {
       logError("upstream fetch threw", err);
       writeJsonError(res, 502, (err as Error).message ?? "upstream error");

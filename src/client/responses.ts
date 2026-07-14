@@ -114,12 +114,64 @@ const UPSTREAM_DEADLINE_MS =
   Number(process.env.VICOOP_CODEX_UPSTREAM_TIMEOUT_MS) || 9 * 60 * 1000;
 
 /**
- * Combine the caller's abort signal (if any) with an absolute upstream
- * deadline, so the request is aborted when *either* fires.
+ * First-header watchdog: max time to wait for the upstream RESPONSE HEADERS to
+ * arrive on a `/responses` attempt before treating it as a stall — aborting that
+ * connection and retrying a fresh one. Keyed on *headers only*, never on first
+ * content: a reasoning model legitimately delays its first content byte by
+ * minutes, but never delays the headers (observed: normal header latency <8s; a
+ * genuine backend stall delays the headers 300–440s — a huge, cleanly separable
+ * gap). Set safely above the normal ceiling and far below any real header.
+ * Implemented as a real timer racing the headers promise (NOT a value handed to
+ * fetch — see LiteLLM #19909, where a downstream-passed timeout never fired
+ * during the wait). Override with `VICOOP_CODEX_UPSTREAM_FIRST_HEADER_MS`;
+ * set it to 0 to disable the watchdog entirely.
  */
-function withDeadline(signal?: AbortSignal): AbortSignal {
-  const deadline = AbortSignal.timeout(UPSTREAM_DEADLINE_MS);
-  return signal ? AbortSignal.any([signal, deadline]) : deadline;
+const UPSTREAM_FIRST_HEADER_MS = (() => {
+  const raw = process.env.VICOOP_CODEX_UPSTREAM_FIRST_HEADER_MS;
+  if (raw === undefined || raw === "") return 60_000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 60_000;
+})();
+
+/**
+ * How many EXTRA attempts to make after a first-header stall (so total attempts
+ * = 1 + this). Bounded so a persistently wedged backend can't loop forever.
+ * Override with `VICOOP_CODEX_UPSTREAM_MAX_RETRIES`.
+ */
+const UPSTREAM_MAX_RETRIES = (() => {
+  const raw = process.env.VICOOP_CODEX_UPSTREAM_MAX_RETRIES;
+  if (raw === undefined || raw === "") return 2;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : 2;
+})();
+
+/**
+ * Whether the FINAL attempt runs "patient": with the first-header watchdog
+ * disabled, so it waits out a slow-but-eventually-served turn (headers at
+ * 300–440s) up to the shared deadline instead of aborting at the watchdog and
+ * failing. Earlier attempts still abort fast and retry — this only changes the
+ * last one, trading a fast failure for a chance at a late success (the stall is
+ * often per-connection queuing, so a fresh connection usually wins first; but if
+ * every retry also stalls, we'd rather ride the last one out than fail a request
+ * that might still complete). On by default; set
+ * `VICOOP_CODEX_UPSTREAM_PATIENT_LAST=0` to make every attempt — including the
+ * last — fail fast at the watchdog with `upstream_stalled`.
+ *
+ * Interaction with MAX_RETRIES=0: the sole attempt IS the last, so patient-last
+ * then disables the watchdog entirely (the original passive, wait-for-deadline
+ * behavior). Disable patient-last to get a single fast-fail attempt.
+ */
+const UPSTREAM_PATIENT_LAST = !/^(0|off|false|no)$/i.test(
+  process.env.VICOOP_CODEX_UPSTREAM_PATIENT_LAST ?? "",
+);
+
+/** Sentinel resolved by the first-header watchdog when it wins the race. */
+const STALL = Symbol("upstream_stall");
+
+/** Combine abort signals; the result fires when the first of them does. */
+function combineSignals(...signals: Array<AbortSignal | undefined>): AbortSignal {
+  const present = signals.filter((s): s is AbortSignal => s !== undefined);
+  return present.length === 1 ? present[0] : AbortSignal.any(present);
 }
 
 export class ApiError extends Error {
@@ -253,10 +305,52 @@ export async function postUpstream(
 ): Promise<Response> {
   const seq = ++upstreamSeq;
   const startedAt = Date.now();
-  logUpstream({ seq, phase: "start", deadlineMs: UPSTREAM_DEADLINE_MS });
-  let res: Response;
-  try {
-    res = await fetchCodexBackend(
+  logUpstream({
+    seq,
+    phase: "start",
+    deadlineMs: UPSTREAM_DEADLINE_MS,
+    firstHeaderMs: UPSTREAM_FIRST_HEADER_MS,
+    maxRetries: UPSTREAM_MAX_RETRIES,
+    patientLast: UPSTREAM_PATIENT_LAST,
+  });
+
+  const payload = JSON.stringify(body);
+  // A single absolute deadline spans ALL attempts, so retrying on a stall can
+  // never push the total past the bridge's per-task timeout (the retries fire
+  // fast — at the ~60s watchdog, not the 9-min deadline).
+  const deadline = AbortSignal.timeout(UPSTREAM_DEADLINE_MS);
+
+  for (let attempt = 0; ; attempt++) {
+    // Per-attempt controller: the first-header watchdog aborts THIS connection
+    // (closing it so foreground generation stops upstream — verified: the
+    // `/responses` body is `stream:true, store:false`, never `background:true`)
+    // without disturbing the caller's signal or the shared deadline.
+    const attemptController = new AbortController();
+    const attemptSignal = combineSignals(signal, deadline, attemptController.signal);
+
+    // Disable the watchdog on the final attempt when patient-last is on, so it
+    // rides a slow-but-eventually-served turn out to the shared deadline rather
+    // than aborting and failing. Earlier attempts always keep the watchdog.
+    const isLastAttempt = attempt >= UPSTREAM_MAX_RETRIES;
+    const watchdogActive =
+      UPSTREAM_FIRST_HEADER_MS > 0 && !(isLastAttempt && UPSTREAM_PATIENT_LAST);
+    if (UPSTREAM_FIRST_HEADER_MS > 0 && isLastAttempt && UPSTREAM_PATIENT_LAST) {
+      logUpstream({
+        seq,
+        phase: "patient",
+        attempt,
+        ms: Date.now() - startedAt,
+      });
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stalled = new Promise<typeof STALL>((resolve) => {
+      if (!watchdogActive) return; // watchdog disabled (globally or patient last)
+      timer = setTimeout(() => resolve(STALL), UPSTREAM_FIRST_HEADER_MS);
+      (timer as unknown as { unref?: () => void }).unref?.();
+    });
+
+    const fetchPromise = fetchCodexBackend(
       "/responses",
       {
         method: "POST",
@@ -264,41 +358,98 @@ export async function postUpstream(
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
-        body: JSON.stringify(body),
-        signal: withDeadline(signal),
+        body: payload,
+        signal: attemptSignal,
       },
       undefined,
       opts,
     );
-  } catch (err) {
-    // Aborted/failed before response headers (e.g. deadline fired during connect).
+
+    let outcome: Response | typeof STALL;
+    try {
+      // Race the arrival of the response HEADERS against the watchdog. Only the
+      // headers are watched — once they arrive the streaming body path (bounded
+      // by the shared 9-min deadline) handles any legitimately slow reasoning.
+      outcome = await Promise.race([fetchPromise, stalled]);
+    } catch (err) {
+      // Aborted/failed before response headers (deadline/caller-abort/network).
+      clearTimeout(timer);
+      logUpstream({
+        seq,
+        phase: "error",
+        when: "pre_headers",
+        attempt,
+        ms: Date.now() - startedAt,
+        err: (err as Error)?.message ?? String(err),
+      });
+      throw err;
+    }
+    clearTimeout(timer);
+
+    if (outcome === STALL) {
+      // Close this attempt's connection so the backend stops generating, then
+      // decide whether to retry a fresh connection or give up.
+      attemptController.abort(
+        new Error(`no upstream response headers for ${UPSTREAM_FIRST_HEADER_MS}ms`),
+      );
+      // Drain/swallow whatever the aborted fetch ultimately settles to (an
+      // AbortError, or a late Response we no longer want) so it can't leak.
+      void fetchPromise.then(
+        (r) => void r.body?.cancel().catch(() => {}),
+        () => {},
+      );
+      logUpstream({
+        seq,
+        phase: "stall",
+        attempt,
+        ms: Date.now() - startedAt,
+        firstHeaderMs: UPSTREAM_FIRST_HEADER_MS,
+      });
+      if (attempt < UPSTREAM_MAX_RETRIES) {
+        logUpstream({
+          seq,
+          phase: "retry",
+          attempt: attempt + 1,
+          ms: Date.now() - startedAt,
+        });
+        continue;
+      }
+      logUpstream({
+        seq,
+        phase: "error",
+        when: "stalled",
+        attempt,
+        ms: Date.now() - startedAt,
+        err: "upstream_stalled",
+      });
+      throw new ApiError(
+        504,
+        `upstream produced no response headers for ${UPSTREAM_FIRST_HEADER_MS}ms after ${attempt + 1} attempt(s)`,
+        "upstream_stalled",
+      );
+    }
+
+    const res = outcome;
     logUpstream({
       seq,
-      phase: "error",
-      when: "pre_headers",
+      phase: "headers",
+      attempt,
       ms: Date.now() - startedAt,
-      err: (err as Error)?.message ?? String(err),
+      status: res.status,
+      ok: res.ok,
+      model: res.headers.get("openai-model") ?? undefined,
+      reqId:
+        res.headers.get("x-request-id") ??
+        res.headers.get("cf-ray") ??
+        undefined,
     });
-    throw err;
+    if (!res.ok || !res.body) return res;
+    return new Response(instrumentBody(res.body, seq, startedAt), {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers,
+    });
   }
-  logUpstream({
-    seq,
-    phase: "headers",
-    ms: Date.now() - startedAt,
-    status: res.status,
-    ok: res.ok,
-    model: res.headers.get("openai-model") ?? undefined,
-    reqId:
-      res.headers.get("x-request-id") ??
-      res.headers.get("cf-ray") ??
-      undefined,
-  });
-  if (!res.ok || !res.body) return res;
-  return new Response(instrumentBody(res.body, seq, startedAt), {
-    status: res.status,
-    statusText: res.statusText,
-    headers: res.headers,
-  });
 }
 
 export async function runResponse(
