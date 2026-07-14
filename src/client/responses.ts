@@ -1,3 +1,4 @@
+import { appendFile } from "node:fs";
 import {
   fetchCodexBackend,
   type FetchCodexOptions,
@@ -141,29 +142,42 @@ async function readErrorBody(res: Response): Promise<string> {
 }
 
 // ── Upstream instrumentation ────────────────────────────────────────────────
-// Structured stderr logging of the raw ChatGPT `/responses` call: request
-// start, response headers (status + time-to-headers), the first upstream byte,
-// and stream end/abort with byte totals. This is the ONLY place that observes
-// the RAW upstream bytes — the `: a2a-heartbeat` liveness comments are injected
-// by the downstream serve/A2A layer, NOT here — so an `error`/`end` phase with
+// Structured logging of the raw ChatGPT `/responses` call: request start,
+// response headers (status + time-to-headers), the first upstream byte, and
+// stream end/abort with byte totals. This is the ONLY place that observes the
+// RAW upstream bytes — the `: a2a-heartbeat` liveness comments are injected by
+// the downstream serve/A2A layer, NOT here — so an `error`/`end` phase with
 // `firstByte:false, bytes:0` is direct proof the backend produced nothing
 // (distinguishing a genuinely silent upstream from a slow-but-streaming one).
-// Lines are tagged `[upstream]` for `journalctl`/log grepping; the bridge
-// captures this process's stderr, so they land next to the task lifecycle.
-// On by default; disable with VICOOP_CODEX_UPSTREAM_LOG=0.
+//
+// Lines are tagged `[upstream]` (JSON). Sinks:
+//   - stderr — on by default; disable with VICOOP_CODEX_UPSTREAM_LOG=0. Note the
+//     bridge (`vicoop-client`) spawns `vicoop-codex serve` as a child and
+//     CAPTURES its stdio, so stderr lines do NOT reach `journalctl` in that
+//     deployment — use the file sink there.
+//   - file — set VICOOP_CODEX_UPSTREAM_LOG_FILE=/path/to/upstream.log to append
+//     there regardless of how stdio is wired (recommended for the bridge). The
+//     file is append-only; rotate/truncate it out of band.
 const UPSTREAM_LOG_ENABLED = !/^(0|off|false|no)$/i.test(
   process.env.VICOOP_CODEX_UPSTREAM_LOG ?? "",
 );
+const UPSTREAM_LOG_FILE = process.env.VICOOP_CODEX_UPSTREAM_LOG_FILE || "";
 let upstreamSeq = 0;
 
 function logUpstream(fields: Record<string, unknown>): void {
-  if (!UPSTREAM_LOG_ENABLED) return;
-  try {
-    process.stderr.write(
-      `[upstream] ${JSON.stringify({ ts: new Date().toISOString(), ...fields })}\n`,
-    );
-  } catch {
-    // Observational only — never let logging break a request.
+  if (!UPSTREAM_LOG_ENABLED && !UPSTREAM_LOG_FILE) return;
+  const line = `[upstream] ${JSON.stringify({ ts: new Date().toISOString(), ...fields })}\n`;
+  if (UPSTREAM_LOG_ENABLED) {
+    try {
+      process.stderr.write(line);
+    } catch {
+      // Observational only — never let logging break a request.
+    }
+  }
+  if (UPSTREAM_LOG_FILE) {
+    // Async, fire-and-forget: never block the stream on disk IO, and swallow
+    // errors (a bad path must not fail requests).
+    appendFile(UPSTREAM_LOG_FILE, line, () => {});
   }
 }
 
