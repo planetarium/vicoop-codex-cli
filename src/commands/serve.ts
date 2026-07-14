@@ -1,7 +1,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { parseSse } from "../client/sse.js";
-import { postUpstream } from "../client/responses.js";
+import { postUpstream, ApiError } from "../client/responses.js";
 import { NotAuthenticatedError } from "../auth/manager.js";
 import { readAuth } from "../auth/store.js";
 import {
@@ -425,6 +425,13 @@ async function handleChatCompletions(
     if (err instanceof NotAuthenticatedError) {
       logError("not authenticated", err);
       writeJsonError(res, 401, err.message, "authentication_error");
+    } else if (err instanceof ApiError) {
+      // Surface the status the client set deliberately (e.g. 504
+      // `upstream_stalled` from the retry-on-stall watchdog) instead of
+      // flattening every throw to 502 — an operator triaging a stall by HTTP
+      // status should see 504 Gateway Timeout, not 502 Bad Gateway.
+      logError(`upstream fetch threw (HTTP ${err.status})`, err);
+      writeJsonError(res, err.status || 502, err.message ?? "upstream error", "api_error", err.detail ?? null);
     } else {
       logError("upstream fetch threw", err);
       writeJsonError(res, 502, (err as Error).message ?? "upstream error");
