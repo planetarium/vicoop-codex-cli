@@ -145,6 +145,26 @@ const UPSTREAM_MAX_RETRIES = (() => {
   return Number.isInteger(n) && n >= 0 ? n : 2;
 })();
 
+/**
+ * Whether the FINAL attempt runs "patient": with the first-header watchdog
+ * disabled, so it waits out a slow-but-eventually-served turn (headers at
+ * 300–440s) up to the shared deadline instead of aborting at the watchdog and
+ * failing. Earlier attempts still abort fast and retry — this only changes the
+ * last one, trading a fast failure for a chance at a late success (the stall is
+ * often per-connection queuing, so a fresh connection usually wins first; but if
+ * every retry also stalls, we'd rather ride the last one out than fail a request
+ * that might still complete). On by default; set
+ * `VICOOP_CODEX_UPSTREAM_PATIENT_LAST=0` to make every attempt — including the
+ * last — fail fast at the watchdog with `upstream_stalled`.
+ *
+ * Interaction with MAX_RETRIES=0: the sole attempt IS the last, so patient-last
+ * then disables the watchdog entirely (the original passive, wait-for-deadline
+ * behavior). Disable patient-last to get a single fast-fail attempt.
+ */
+const UPSTREAM_PATIENT_LAST = !/^(0|off|false|no)$/i.test(
+  process.env.VICOOP_CODEX_UPSTREAM_PATIENT_LAST ?? "",
+);
+
 /** Sentinel resolved by the first-header watchdog when it wins the race. */
 const STALL = Symbol("upstream_stall");
 
@@ -291,6 +311,7 @@ export async function postUpstream(
     deadlineMs: UPSTREAM_DEADLINE_MS,
     firstHeaderMs: UPSTREAM_FIRST_HEADER_MS,
     maxRetries: UPSTREAM_MAX_RETRIES,
+    patientLast: UPSTREAM_PATIENT_LAST,
   });
 
   const payload = JSON.stringify(body);
@@ -307,9 +328,24 @@ export async function postUpstream(
     const attemptController = new AbortController();
     const attemptSignal = combineSignals(signal, deadline, attemptController.signal);
 
+    // Disable the watchdog on the final attempt when patient-last is on, so it
+    // rides a slow-but-eventually-served turn out to the shared deadline rather
+    // than aborting and failing. Earlier attempts always keep the watchdog.
+    const isLastAttempt = attempt >= UPSTREAM_MAX_RETRIES;
+    const watchdogActive =
+      UPSTREAM_FIRST_HEADER_MS > 0 && !(isLastAttempt && UPSTREAM_PATIENT_LAST);
+    if (UPSTREAM_FIRST_HEADER_MS > 0 && isLastAttempt && UPSTREAM_PATIENT_LAST) {
+      logUpstream({
+        seq,
+        phase: "patient",
+        attempt,
+        ms: Date.now() - startedAt,
+      });
+    }
+
     let timer: ReturnType<typeof setTimeout> | undefined;
     const stalled = new Promise<typeof STALL>((resolve) => {
-      if (UPSTREAM_FIRST_HEADER_MS <= 0) return; // watchdog disabled
+      if (!watchdogActive) return; // watchdog disabled (globally or patient last)
       timer = setTimeout(() => resolve(STALL), UPSTREAM_FIRST_HEADER_MS);
       (timer as unknown as { unref?: () => void }).unref?.();
     });

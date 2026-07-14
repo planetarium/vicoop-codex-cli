@@ -20,6 +20,9 @@ process.env.VICOOP_CODEX_ACCOUNT_STRATEGY = "test-keyorder";
 // before importing responses.js below.
 process.env.VICOOP_CODEX_UPSTREAM_FIRST_HEADER_MS = "30";
 process.env.VICOOP_CODEX_UPSTREAM_MAX_RETRIES = "1";
+// Fail fast on every attempt (incl. the last) here so the exhaustion path is
+// deterministic; the patient-last behavior is covered in responses.patient.test.ts.
+process.env.VICOOP_CODEX_UPSTREAM_PATIENT_LAST = "0";
 // Silence the [upstream] stderr instrumentation during tests.
 process.env.VICOOP_CODEX_UPSTREAM_LOG = "0";
 
