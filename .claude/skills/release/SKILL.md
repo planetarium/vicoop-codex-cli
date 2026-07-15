@@ -1,80 +1,101 @@
 ---
 name: release
-description: How to cut a release of vicoop-codex-cli. Use when asked to release, publish, ship a new version, bump the version, create a tag, build the binaries, or troubleshoot the release GitHub Actions workflow.
+description: How to cut a release of vicoop-codex-cli. Use when asked to release, publish, ship a new version, bump the version, create a tag, build the binaries, add a changeset, or troubleshoot the release GitHub Actions workflow.
 ---
 
 # Releasing vicoop-codex-cli
 
-Releases are **tag-driven** and fully automated by `.github/workflows/release.yml`.
-There is **no** release-on-merge: merging to `main` only runs the build/type-check
-gate (`.github/workflows/ci.yml`). A release happens **only** when a `v*` tag is
-pushed to GitHub.
+Releases are **Changesets-driven**. Each behavior-affecting PR ships a
+`.changeset/*.md` file declaring the bump (patch/minor/major) + a human summary.
+Changesets accumulates those into a **"Version Packages" PR**; **merging that PR is
+what cuts a release** — it bumps `package.json`, writes `CHANGELOG.md`, pushes the
+`vX.Y.Z` tag, creates the GitHub Release, and builds/attaches the binaries.
 
-The pushed tag is the **source of truth** for the released version.
+Changesets is used purely for **versioning + changelog**. This repo does **not**
+publish to npm — the release artifacts are the four standalone binaries on the
+GitHub Release. The pushed `vX.Y.Z` tag is still the released-version source of
+truth (stamped into the sources at build time by `scripts/inject-version.mjs`).
 
-## What the release workflow does
+The whole flow lives in `.github/workflows/version.yml`. `release.yml` is now a
+**manual fallback only** (`workflow_dispatch`) for rebuilding binaries for an
+existing tag.
 
-On `push` of a tag matching `v*`, the `release` job (on `ubuntu-latest`):
+## The normal flow (per contributor)
 
-1. Derives the version from the tag (`v1.2.3` → `1.2.3`) and validates it is semver.
-   Tags with a pre-release suffix before any `+build` metadata (e.g. `v1.2.3-rc.1`)
-   are published as a GitHub **pre-release**.
-2. Injects the version into `package.json` and `src/index.ts` via
-   `scripts/inject-version.mjs` (build-only — **not** committed).
-3. Runs `npm ci` then `npm run build` (`tsc` → `dist/`).
-4. Cross-compiles four standalone binaries with **Bun** (`bun build --compile`),
-   all from the single Linux runner:
-   - `vicoop-codex-<version>-windows-x64.exe`
-   - `vicoop-codex-<version>-macos-arm64`
-   - `vicoop-codex-<version>-linux-x64`
-   - `vicoop-codex-<version>-linux-arm64`
-5. Generates `SHA256SUMS.txt` for the binaries.
-6. Publishes a GitHub Release for the tag (auto-generated notes) with the binaries
-   and `SHA256SUMS.txt` attached, using `softprops/action-gh-release@v2`.
+1. Open your PR as usual. If it changes runtime behavior, add a changeset:
 
-## How to cut a release
+   ```bash
+   npm run changeset          # interactive: pick bump type + write a summary
+   ```
 
-Pick the next version (semver). Then either:
+   This writes a `.changeset/<random-name>.md` file — commit it with your PR.
+   Chore/docs/CI-only PRs that don't affect a release need **no** changeset.
 
-**Option A — let npm bump `package.json` and create the tag:**
+   To pick the bump type by hand, a changeset file is just:
 
-```bash
-npm version patch          # or: minor | major   → creates the vX.Y.Z tag locally
-git push && git push --tags
-```
+   ```md
+   ---
+   "vicoop-codex-cli": minor
+   ---
 
-**Option B — tag by hand:**
+   Human-readable summary of the change.
+   ```
 
-```bash
-git tag v1.2.3
-git push origin v1.2.3
-```
+2. Merge your PR to `main`. `version.yml` runs and opens (or refreshes) a
+   **"chore: version packages"** PR that rolls up all pending changesets into the
+   next `package.json` version + `CHANGELOG.md`.
 
-That is all. The tag push triggers the workflow; no manual binary builds are needed.
+3. **Merge the "Version Packages" PR when you want to cut the release.** On that
+   merge, `version.yml`:
+   - runs `changeset tag` → creates the `vX.Y.Z` tag and pushes it,
+   - creates the GitHub Release with the `CHANGELOG.md` entry as the body,
+   - cross-compiles the four standalone binaries with **Bun** and attaches them +
+     `SHA256SUMS.txt`.
 
-Notes:
-- The workflow injects the version from the tag, so the committed `package.json`
-  version does not strictly need to match the tag. Keeping them in sync (Option A)
-  is recommended for clarity.
-- Pre-release: `git tag v1.2.3-rc.1` → published as a GitHub pre-release.
+That's it — no manual tagging, no manual binary builds.
+
+### What the binary build produces
+
+- `vicoop-codex-<version>-windows-x64.exe`
+- `vicoop-codex-<version>-macos-arm64`
+- `vicoop-codex-<version>-linux-x64`
+- `vicoop-codex-<version>-linux-arm64`
+- `SHA256SUMS.txt`
+
+All cross-compiled from a single Linux runner via `bun build --compile`.
+
+## Why no npm publish / no PAT
+
+- `.changeset/config.json` sets `access: "restricted"` and the workflow uses
+  `changeset tag` (not `changeset publish`), so nothing is ever pushed to a
+  registry.
+- Everything (tag push + release + binaries) happens **inside one workflow run**,
+  so the default `GITHUB_TOKEN` suffices. (A tag pushed by `GITHUB_TOKEN` does not
+  trigger *other* workflows — folding the build into `version.yml` sidesteps that.)
+
+## Manual binary rebuild (recovery)
+
+If a release's binaries failed to build/upload, or you hand-pushed a tag, rebuild
+them without re-cutting the release:
+
+1. GitHub → Actions → **release (manual rebuild)** → *Run workflow*.
+2. Enter the existing tag (e.g. `v0.8.2`).
+
+This checks out the tag, rebuilds the four binaries, and re-attaches them to that
+tag's GitHub Release (`.github/workflows/release.yml`).
 
 ## Verify a release
 
-After the workflow finishes, confirm at
-`https://github.com/planetarium/vicoop-codex-cli/releases` that the four binaries
-and `SHA256SUMS.txt` are attached. Smoke-test the matching binary:
+Confirm at `https://github.com/planetarium/vicoop-codex-cli/releases` that the four
+binaries and `SHA256SUMS.txt` are attached, and that the release body matches the
+`CHANGELOG.md` entry. Smoke-test the matching binary:
 
 ```bash
 ./vicoop-codex-<version>-<platform> --version   # must print <version>
+sha256sum -c SHA256SUMS.txt                      # in the dir with the binaries
 ```
 
-Checksum verification:
-
-```bash
-sha256sum -c SHA256SUMS.txt   # run in the directory containing the binaries
-```
-
-## Build/run the binaries locally (for testing before tagging)
+## Build/run the binaries locally (before merging)
 
 Requires [Bun](https://bun.sh) installed.
 
@@ -91,21 +112,26 @@ Valid Bun targets used by the pipeline: `bun-windows-x64`, `bun-darwin-arm64`,
 
 ## Troubleshooting
 
-- **Workflow didn't run.** It only triggers on tags matching `v*`. Confirm the tag
-  was pushed (`git push origin <tag>`), not just created locally, and that it
-  starts with `v`.
-- **"is not a valid semver tag" error.** The tag (minus `v`) must match
-  `X.Y.Z` with an optional `-prerelease` and/or `+build` suffix. Re-tag correctly.
-- **Binary reports the wrong `--version`.** The version comes from
-  `const VERSION = "…"` in `src/index.ts`, rewritten at build time by
-  `scripts/inject-version.mjs`. If that constant is renamed/removed, the injection
+- **No "Version Packages" PR appeared.** There are no pending changesets on `main`.
+  Add one (`npm run changeset`) in a PR and merge it. Check the `version.yml` run
+  under Actions.
+- **Merged the Version PR but no release / no binaries.** The binary steps only run
+  when `changeset tag` actually pushed a **new** tag (`published == 'true'`). If the
+  target version was already tagged, nothing happens — bump again via a changeset.
+  Check the `version.yml` run logs.
+- **Binary reports the wrong `--version`.** The version is stamped from
+  `package.json` into `const VERSION = "…"` in `src/index.ts` at build time by
+  `scripts/inject-version.mjs`. If that constant is renamed/removed the injection
   step fails fast — keep the `const VERSION = "…";` line intact.
-- **Re-releasing the same tag.** Delete the tag and GitHub Release first
-  (`git push origin :refs/tags/v1.2.3` and remove the release in the GitHub UI),
-  then re-tag. `action-gh-release` updates an existing release for the tag rather
-  than erroring.
+- **Wrong bump type shipped.** Changesets aggregates: if any pending changeset is
+  `minor`, the release is at least `minor`. Fix by editing/removing the offending
+  `.changeset/*.md` before the Version PR merges.
 - **Adding a platform.** Add a `compile <bun-target> "<artifact-name>"` line to the
-  "Compile standalone binaries" step in `.github/workflows/release.yml`.
+  "Compile standalone binaries" step in **both** `.github/workflows/version.yml`
+  and `.github/workflows/release.yml` (they share the compile block).
+- **Re-releasing the same version.** Delete the tag and its GitHub Release first
+  (`git push origin :refs/tags/vX.Y.Z` + remove the release in the UI), then use the
+  **release (manual rebuild)** workflow, or cut a fresh version via a new changeset.
 
 ## macOS / Windows signing (known gap)
 

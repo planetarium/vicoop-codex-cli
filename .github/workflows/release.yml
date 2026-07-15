@@ -1,36 +1,35 @@
-name: release
+name: release (manual rebuild)
 
-# Tag-driven release. Push a semver tag to cut a release:
+# Manual fallback only. The normal release flow is Changesets-driven and lives in
+# `version.yml`: merging a "Version Packages" PR pushes the `vX.Y.Z` tag, creates
+# the GitHub Release, and builds/attaches the binaries automatically.
 #
-#   npm version patch            # bumps package.json + creates the vX.Y.Z tag
-#   git push && git push --tags  # push main + the tag
-#
-# …or tag by hand:
-#
-#   git tag v1.2.3 && git push origin v1.2.3
-#
-# The tag is the source of truth for the released version: it is injected into
-# the sources, four standalone binaries are cross-compiled with Bun, and a
-# GitHub Release is created for the tag with the binaries + checksums attached.
+# Use THIS workflow to recover a release whose binaries failed to build or upload
+# (or to (re)build binaries for a hand-pushed tag): it rebuilds the four standalone
+# binaries for an existing tag and re-attaches them to that tag's GitHub Release.
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to (re)build binaries for, e.g. v0.8.2"
+        required: true
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   release:
-    name: Build binaries & publish release
+    name: Rebuild binaries for a tag
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout the tag
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -46,7 +45,7 @@ jobs:
       - name: Derive version from tag
         id: version
         env:
-          REF_NAME: ${{ github.ref_name }}
+          REF_NAME: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           VERSION="${REF_NAME#v}"
@@ -62,7 +61,7 @@ jobs:
           else
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "Releasing version $VERSION (tag $REF_NAME)"
+          echo "Rebuilding binaries for version $VERSION (tag $REF_NAME)"
 
       - name: Inject version into sources
         env:
@@ -104,9 +103,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ inputs.tag }}
           name: vicoop-codex ${{ steps.version.outputs.version }}
-          generate_release_notes: true
           prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
           fail_on_unmatched_files: true
           files: |
