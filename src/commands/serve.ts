@@ -5,12 +5,6 @@ import { postUpstream, ApiError } from "../client/responses.js";
 import { NotAuthenticatedError } from "../auth/manager.js";
 import { readAuth } from "../auth/store.js";
 import {
-  A2A_ROUTE_PATH,
-  AGENT_CARD_PATH,
-  AGENT_CARD_PATH_ALT,
-} from "../a2a/agent-card.js";
-import { getA2ABundle } from "../a2a/handler.js";
-import {
   chatCompletionsToUpstream,
   collectChatCompletion,
   determineFinishReason,
@@ -484,14 +478,6 @@ async function handleChatCompletions(
   res.end(JSON.stringify(collected.ok));
 }
 
-function getBaseUrl(req: http.IncomingMessage, opts: ServeCmdOptions): string {
-  const forwardedProto = (req.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0]?.trim();
-  const forwardedHost = (req.headers["x-forwarded-host"] as string | undefined)?.split(",")[0]?.trim();
-  const host = forwardedHost ?? (req.headers.host as string | undefined) ?? `${opts.host}:${opts.port}`;
-  const proto = forwardedProto ?? "http";
-  return `${proto}://${host}`;
-}
-
 async function handleUsage(res: http.ServerResponse): Promise<void> {
   const accounts = (await fetchAllAccountUsage()).map((r) => ({
     key: r.key,
@@ -505,80 +491,6 @@ async function handleUsage(res: http.ServerResponse): Promise<void> {
   }));
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ accounts }));
-}
-
-async function handleAgentCard(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  opts: ServeCmdOptions,
-): Promise<void> {
-  const baseUrl = getBaseUrl(req, opts);
-  const { handler } = getA2ABundle(baseUrl);
-  const card = handler.getAgentCard();
-  res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify(card));
-}
-
-async function handleA2A(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  opts: ServeCmdOptions,
-): Promise<void> {
-  let body: unknown;
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    logError("invalid JSON body (a2a)", err);
-    res.writeHead(400, { "content-type": "application/json" });
-    res.end(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id: null,
-        error: { code: -32700, message: "Parse error" },
-      }),
-    );
-    return;
-  }
-
-  process.stderr.write(
-    `[${new Date().toISOString()}] POST ${A2A_ROUTE_PATH}\n${JSON.stringify(body, null, 2)}\n`,
-  );
-
-  const { handler } = getA2ABundle(getBaseUrl(req, opts));
-
-  let result;
-  try {
-    result = await handler.handle(body);
-  } catch (err) {
-    logError("a2a handler threw", err);
-    res.writeHead(500, { "content-type": "application/json" });
-    res.end(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id: (body as { id?: unknown })?.id ?? null,
-        error: { code: -32603, message: (err as Error).message ?? "Internal error" },
-      }),
-    );
-    return;
-  }
-
-  if (result && typeof result === "object" && Symbol.asyncIterator in result) {
-    res.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-      "x-accel-buffering": "no",
-    });
-    for await (const event of result as AsyncGenerator<unknown>) {
-      if (res.writableEnded) break;
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
-    }
-    res.end();
-    return;
-  }
-
-  res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify(result));
 }
 
 export async function serveCommand(opts: ServeCmdOptions): Promise<number> {
@@ -642,23 +554,6 @@ export async function serveCommand(opts: ServeCmdOptions): Promise<number> {
       });
       return;
     }
-    if (
-      req.method === "GET" &&
-      (req.url === AGENT_CARD_PATH || req.url === AGENT_CARD_PATH_ALT)
-    ) {
-      handleAgentCard(req, res, opts).catch((err) => {
-        logError("agent-card handler threw", err);
-        writeJsonError(res, 500, (err as Error).message ?? String(err));
-      });
-      return;
-    }
-    if (req.method === "POST" && req.url === A2A_ROUTE_PATH) {
-      handleA2A(req, res, opts).catch((err) => {
-        logError("a2a handler threw", err);
-        writeJsonError(res, 500, (err as Error).message ?? String(err));
-      });
-      return;
-    }
     if (req.method === "GET" && (req.url === USAGE_PATH || req.url === "/v1/usage")) {
       handleUsage(res).catch((err) => {
         logError("usage handler threw", err);
@@ -694,9 +589,6 @@ export async function serveCommand(opts: ServeCmdOptions): Promise<number> {
     `vicoop-codex serve listening on:\n` +
       `  POST ${base}${ROUTE_PATH}        (OpenAI Chat Completions)\n` +
       `  GET  ${base}${USAGE_PATH}                      (per-account remaining Codex usage)\n` +
-      `  GET  ${base}${AGENT_CARD_PATH}        (A2A Agent Card)\n` +
-      `  GET  ${base}${AGENT_CARD_PATH_ALT}  (A2A Agent Card — alt path)\n` +
-      `  POST ${base}${A2A_ROUTE_PATH}        (A2A JSON-RPC, @a2x/sdk)\n` +
       `Backed by your local ChatGPT OAuth token.\n` +
       `Default model (for requests that omit one; may self-heal if retired): ${getDefaultModel() ?? "(unset)"}\n`,
   );

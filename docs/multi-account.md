@@ -1,7 +1,7 @@
 # Multiple accounts
 
 `vicoop-codex` can hold credentials for several ChatGPT accounts at once. When a
-request is made (`prompt`, `call`, or the `serve` HTTP / A2A surfaces), the CLI
+request is made (`prompt`, `call`, or the `serve` HTTP surface), the CLI
 picks one **available** account and, if that call fails, **falls back** to
 another. The selection policy is pluggable.
 
@@ -118,8 +118,8 @@ Three ways, increasing in directness:
    few prompts to watch selection spread across accounts; `accounts disable <key>`
    one and confirm only the other advances.
 2. **`VICOOP_CODEX_LOG_ACCOUNT=1`** logs the chosen account (and any fallback
-   hops) to stderr for every backend call — works for `prompt`, `call`, `serve`,
-   and A2A. Off by default; no effect on normal output.
+   hops) to stderr for every backend call — works for `prompt`, `call`, and
+   `serve`. Off by default; no effect on normal output.
    ```bash
    VICOOP_CODEX_LOG_ACCOUNT=1 vicoop-codex prompt -m <model> "hi"
    # stderr: [account] using bob@home.com [pro-9]

@@ -197,8 +197,8 @@ async function readErrorBody(res: Response): Promise<string> {
 // Structured logging of the raw ChatGPT `/responses` call: request start,
 // response headers (status + time-to-headers), the first upstream byte, and
 // stream end/abort with byte totals. This is the ONLY place that observes the
-// RAW upstream bytes — the `: a2a-heartbeat` liveness comments are injected by
-// the downstream serve/A2A layer, NOT here — so an `error`/`end` phase with
+// RAW upstream bytes — the `: heartbeat` liveness comments are injected by the
+// downstream serve streaming layer, NOT here — so an `error`/`end` phase with
 // `firstByte:false, bytes:0` is direct proof the backend produced nothing
 // (distinguishing a genuinely silent upstream from a slow-but-streaming one).
 //
