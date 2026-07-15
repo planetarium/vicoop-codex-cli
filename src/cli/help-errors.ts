@@ -329,18 +329,6 @@ export function formatMissingModelBody(models: string[] | null): string {
 }
 
 /**
- * Single-line variant for transport surfaces (serve HTTP 400, A2A error event)
- * where the message is embedded in a JSON body or a text event.
- */
-export function missingModelMessage(models: string[] | null): string {
-  const base = "'model' is required (there is no default).";
-  if (models && models.length > 0) {
-    return `${base} Available models: ${models.join(", ")}`;
-  }
-  return `${base} List available models via the backend /models endpoint.`;
-}
-
-/**
  * Print a formatted error to stderr with a trailing newline.
  */
 export function printError(formatted: string): void {

@@ -1,11 +1,10 @@
 import { tryListModelIds } from "./models.js";
 
 /**
- * Self-healing default model shared by `serve`'s two request surfaces — the
- * OpenAI Chat Completions endpoint and the A2A endpoint. The `serve` command
- * seeds it at startup (from `--default-model`, or by auto-selecting the first
- * advertised model). Both request paths fall back to it when a request omits
- * `model`, and re-resolve it when the backend reports the current default
+ * Self-healing default model for `serve`'s OpenAI Chat Completions endpoint.
+ * The `serve` command seeds it at startup (from `--default-model`, or by
+ * auto-selecting the first advertised model). Requests that omit `model` fall
+ * back to it, and it re-resolves when the backend reports the current default
  * unavailable — adopting the first advertised id that hasn't been rejected, so
  * a retired list-head can't trap the server on a permanently-failing model.
  */

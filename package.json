@@ -31,7 +31,6 @@
     "typescript": "^5.7.2"
   },
   "dependencies": {
-    "@a2x/sdk": "^0.14.0",
     "commander": "^14.0.3"
   }
 }

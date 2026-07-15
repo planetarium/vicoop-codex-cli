@@ -818,7 +818,6 @@ console.log(r.choices[0].message.content);
 - 응답 헤더의 `x-codex-*` 사용량 정보는 현재 클라이언트로 전달되지 않는다.
 - 비스트리밍 모드에서 우리는 전체 응답을 메모리에 버퍼링한다. 매우 긴 응답에는 부적합.
 - `response_format` (`json_object` / `json_schema`)은 `text.format`으로 매핑되어 전달되지만, ChatGPT Codex 백엔드의 `text.format` 지원 여부는 실측 검증 안 됨. 백엔드가 거절하면 클라이언트는 명시적 에러를 받음.
-- A2A 엔드포인트(`/a2a`)의 SSE에는 도구 호출 이벤트가 노출되지 않음 (`src/a2a/agent.ts`는 텍스트 delta만 yield). 도구 사용 멀티턴이 필요하면 `/v1/chat/completions`를 쓸 것.
 
 ## 참고 링크
 

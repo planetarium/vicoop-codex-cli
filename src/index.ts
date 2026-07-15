@@ -271,7 +271,7 @@ Examples:
   program
     .command("serve")
     .description(
-      "Run a local HTTP server that exposes POST /v1/chat/completions (OpenAI Chat Completions shape) and an A2A endpoint, backed by your ChatGPT OAuth.",
+      "Run a local HTTP server that exposes POST /v1/chat/completions (OpenAI Chat Completions shape), backed by your ChatGPT OAuth.",
     )
     .option("-p, --port <n>", "Port to bind (0 = random ephemeral; default: 8787)", "8787")
     .option("-H, --host <ip>", "Host/IP to bind (default: 127.0.0.1)", "127.0.0.1")
