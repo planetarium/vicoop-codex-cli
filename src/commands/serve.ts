@@ -594,10 +594,89 @@ export async function serveCommand(opts: ServeCmdOptions): Promise<number> {
   );
 
   return await new Promise<number>((resolve) => {
+    let parentWatch: { stop: () => void } | null = null;
     const shutdown = () => {
+      parentWatch?.stop();
+      parentWatch = null;
       server.close(() => resolve(0));
     };
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
+    // SIGHUP (controlling terminal / session torn down) otherwise terminates us
+    // with Node's default disposition. Treat it as a graceful stop.
+    process.once("SIGHUP", shutdown);
+
+    const initialPpid = process.ppid;
+    parentWatch = startParentDeathWatch({
+      initialPpid,
+      enabled: !/^(0|off|false|no)$/i.test(
+        process.env.VICOOP_CODEX_SERVE_PARENT_WATCH ?? "",
+      ),
+      intervalMs: parseParentWatchMs(process.env.VICOOP_CODEX_SERVE_PARENT_WATCH_MS),
+      onOrphan: () => {
+        logError("parent process exited; shutting down orphaned serve", {
+          initialPpid,
+          currentPpid: process.ppid,
+        });
+        // The only client was the now-dead parent, so there are no in-flight
+        // requests worth draining; drop any lingering sockets so `server.close`
+        // can't hang on a keep-alive connection to a corpse.
+        server.closeAllConnections?.();
+        shutdown();
+      },
+    });
   });
+}
+
+interface ParentDeathWatchOptions {
+  // The parent pid observed at startup. The watch is a no-op when this is <= 1
+  // (already an orphan / launched directly under init or a real supervisor).
+  initialPpid: number;
+  // Called once when the parent is detected to have gone away.
+  onOrphan: () => void;
+  // Poll interval; defaults to 5000ms. Values <= 0 fall back to the default.
+  intervalMs?: number;
+  // When false, no watch is installed. Defaults to true.
+  enabled?: boolean;
+  // Seams for tests.
+  getPpid?: () => number;
+  setIntervalFn?: (handler: () => void, ms: number) => NodeJS.Timeout;
+}
+
+// Parent-death watchdog for `vicoop-codex serve`. Under the bridge,
+// `vicoop-client` spawns serve as a child WITHOUT `detached`, and several of the
+// client's exit paths (a fatal WS close, an uncaughtException, SIGKILL) tear the
+// client down without signaling us. Node delivers no signal to a child when its
+// parent dies, and we hold no other liveness link to it — so an orphaned serve
+// keeps LISTENing forever (a leaked ephemeral port and a stale process). We poll
+// `process.ppid`: once it changes, the parent we were spawned under is gone (we
+// have been reparented to init / a subreaper) and `onOrphan` self-terminates the
+// server. A direct run (interactive TTY, or a real supervisor as pid 1) starts
+// with ppid 1 and is left alone.
+export function startParentDeathWatch(
+  opts: ParentDeathWatchOptions,
+): { stop: () => void } | null {
+  const enabled = opts.enabled ?? true;
+  if (!enabled || opts.initialPpid <= 1) return null;
+  const getPpid = opts.getPpid ?? (() => process.ppid);
+  const intervalMs =
+    opts.intervalMs !== undefined && opts.intervalMs > 0 ? opts.intervalMs : 5_000;
+  const setIntervalFn = opts.setIntervalFn ?? setInterval;
+  let fired = false;
+  const timer = setIntervalFn(() => {
+    if (fired || getPpid() === opts.initialPpid) return;
+    fired = true;
+    opts.onOrphan();
+  }, intervalMs);
+  // Never let the watchdog itself keep the event loop alive.
+  timer.unref?.();
+  return { stop: () => clearInterval(timer) };
+}
+
+// Parse VICOOP_CODEX_SERVE_PARENT_WATCH_MS; undefined for blank/invalid so the
+// watch falls back to its default interval.
+function parseParentWatchMs(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
