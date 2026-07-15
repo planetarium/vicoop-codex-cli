@@ -1,7 +1,118 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { streamChatCompletion, wireClientAbort, type StreamSink } from "./serve.js";
+import {
+  streamChatCompletion,
+  wireClientAbort,
+  startParentDeathWatch,
+  type StreamSink,
+} from "./serve.js";
+
+// A setInterval seam that captures the tick handler so tests can drive it
+// deterministically, and records unref()/clearInterval calls.
+function fakeInterval() {
+  let handler: (() => void) | null = null;
+  let unrefCalls = 0;
+  let cleared = false;
+  const timer = {
+    unref() {
+      unrefCalls++;
+      return timer;
+    },
+  } as unknown as NodeJS.Timeout;
+  const setIntervalFn = (h: () => void, _ms: number): NodeJS.Timeout => {
+    handler = h;
+    return timer;
+  };
+  return {
+    setIntervalFn,
+    tick: () => handler?.(),
+    timer,
+    get unrefCalls() {
+      return unrefCalls;
+    },
+    get cleared() {
+      return cleared;
+    },
+    markCleared: () => {
+      cleared = true;
+    },
+  };
+}
+
+test("startParentDeathWatch fires onOrphan once when ppid changes", () => {
+  const fi = fakeInterval();
+  let ppid = 42;
+  let orphaned = 0;
+  const watch = startParentDeathWatch({
+    initialPpid: 42,
+    onOrphan: () => orphaned++,
+    getPpid: () => ppid,
+    setIntervalFn: fi.setIntervalFn,
+  });
+  assert.ok(watch, "watch should be installed for a real parent");
+  assert.equal(fi.unrefCalls, 1, "timer must be unref'd");
+
+  fi.tick(); // ppid unchanged -> no fire
+  assert.equal(orphaned, 0);
+
+  ppid = 1; // reparented to init: parent is gone
+  fi.tick();
+  assert.equal(orphaned, 1);
+
+  fi.tick(); // stays fired: never double-fire
+  assert.equal(orphaned, 1);
+});
+
+test("startParentDeathWatch also fires when reparented to a subreaper (ppid changes, not 1)", () => {
+  const fi = fakeInterval();
+  let ppid = 42;
+  let orphaned = 0;
+  startParentDeathWatch({
+    initialPpid: 42,
+    onOrphan: () => orphaned++,
+    getPpid: () => ppid,
+    setIntervalFn: fi.setIntervalFn,
+  });
+  ppid = 999; // a subreaper, not init
+  fi.tick();
+  assert.equal(orphaned, 1);
+});
+
+test("startParentDeathWatch is a no-op when disabled", () => {
+  const fi = fakeInterval();
+  const watch = startParentDeathWatch({
+    initialPpid: 42,
+    enabled: false,
+    onOrphan: () => assert.fail("should not fire"),
+    getPpid: () => 1,
+    setIntervalFn: fi.setIntervalFn,
+  });
+  assert.equal(watch, null);
+});
+
+test("startParentDeathWatch is a no-op when already an orphan (ppid <= 1)", () => {
+  const fi = fakeInterval();
+  const watch = startParentDeathWatch({
+    initialPpid: 1,
+    onOrphan: () => assert.fail("should not fire"),
+    getPpid: () => 1,
+    setIntervalFn: fi.setIntervalFn,
+  });
+  assert.equal(watch, null);
+});
+
+test("startParentDeathWatch stop() clears the timer", () => {
+  const fi = fakeInterval();
+  const watch = startParentDeathWatch({
+    initialPpid: 42,
+    onOrphan: () => assert.fail("stopped watch must not fire"),
+    getPpid: () => 42,
+    setIntervalFn: fi.setIntervalFn,
+  });
+  assert.ok(watch);
+  watch.stop(); // must not throw; timer handle passed to clearInterval
+});
 
 // Build a ReadableStream<Uint8Array> from a list of Responses-API SSE events.
 // Each event is serialized as a `data: <json>\n\n` frame, matching the upstream

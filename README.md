@@ -294,6 +294,25 @@ serve` as a child and captures its stdio, so stderr lines do **not** reach
 The absolute ceiling for a single `/responses` call is `VICOOP_CODEX_UPSTREAM_TIMEOUT_MS`
 (default 9 min); a stuck upstream is aborted at that deadline.
 
+### Orphan protection (parent-death watchdog)
+
+When `serve` is run as a child of another process (e.g. the bridge's
+`vicoop-client` spawns it and captures its stdio), a crash or hard kill of that
+parent leaves `serve` reparented to init, still holding its listening port —
+a leaked process. To prevent this, `serve` polls its parent pid and shuts down
+once the parent it was spawned under goes away. A `serve` launched **directly**
+(interactive TTY, or a proper daemon under `setsid`/systemd/launchd/docker as
+pid 1) starts with parent pid 1 and the watchdog stays disabled, so normal use
+is unaffected.
+
+Caveat: this intentionally overrides the ad-hoc `nohup vicoop-codex serve &` /
+`disown` idiom — those keep the process past logout by ignoring SIGHUP, but do
+**not** stop reparenting, so the watchdog would still shut `serve` down. Use a
+real service manager (`setsid`, systemd, launchd) to daemonize, or set
+`VICOOP_CODEX_SERVE_PARENT_WATCH=0` to disable the watchdog. Tune the poll with
+`VICOOP_CODEX_SERVE_PARENT_WATCH_MS` (default 5000). SIGHUP is also handled as a
+graceful shutdown.
+
 ## Releasing
 
 Releases are **tag-driven** and fully automated by
