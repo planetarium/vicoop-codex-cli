@@ -23,6 +23,8 @@ process.env.VICOOP_CODEX_UPSTREAM_MAX_RETRIES = "1";
 // Fail fast on every attempt (incl. the last) here so the exhaustion path is
 // deterministic; the patient-last behavior is covered in responses.patient.test.ts.
 process.env.VICOOP_CODEX_UPSTREAM_PATIENT_LAST = "0";
+// No backoff pause between bad-status retries so those paths run instantly.
+process.env.VICOOP_CODEX_UPSTREAM_RETRY_BACKOFF_MS = "0";
 // Silence the [upstream] stderr instrumentation during tests.
 process.env.VICOOP_CODEX_UPSTREAM_LOG = "0";
 
@@ -144,6 +146,51 @@ test("postUpstream throws upstream_stalled after retries are exhausted", async (
   );
   // 1 initial attempt + 1 retry (VICOOP_CODEX_UPSTREAM_MAX_RETRIES=1).
   assert.equal(calls, 2);
+});
+
+// A received-but-error response: headers arrive, status is bad (issue #45's
+// transient Cloudflare 520 with the OpenAI-branded HTML error page as body).
+function badStatus(status: number): Response {
+  return new Response("<html>error</html>", { status });
+}
+
+test("postUpstream retries a transient 520 and succeeds on the fresh connection", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    if (calls === 1) return badStatus(520);
+    return sseOk();
+  }) as typeof fetch;
+
+  const res = await postUpstream({ model: "gpt-5.5" });
+  assert.equal(res.status, 200);
+  assert.equal(calls, 2, "should have retried exactly once after the 520");
+});
+
+test("postUpstream returns the final bad response after retries are exhausted", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    return badStatus(520); // every attempt errors
+  }) as typeof fetch;
+
+  const res = await postUpstream({ model: "gpt-5.5" });
+  // 1 initial attempt + 1 retry (VICOOP_CODEX_UPSTREAM_MAX_RETRIES=1); the last
+  // attempt's response is returned as-is so error formatting is unchanged.
+  assert.equal(calls, 2);
+  assert.equal(res.status, 520);
+});
+
+test("postUpstream does not retry a non-retryable status", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    return badStatus(400); // caller error — retrying cannot help
+  }) as typeof fetch;
+
+  const res = await postUpstream({ model: "gpt-5.5" });
+  assert.equal(calls, 1, "a 4xx caller error must not retry");
+  assert.equal(res.status, 400);
 });
 
 test("postUpstream returns the first response when headers arrive promptly", async () => {

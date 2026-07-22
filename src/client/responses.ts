@@ -134,8 +134,10 @@ const UPSTREAM_FIRST_HEADER_MS = (() => {
 })();
 
 /**
- * How many EXTRA attempts to make after a first-header stall (so total attempts
- * = 1 + this). Bounded so a persistently wedged backend can't loop forever.
+ * How many EXTRA attempts to make after a first-header stall OR a retryable
+ * received-but-error status (5xx/408/409/425/429 — see `isRetryableStatus`), so
+ * total attempts = 1 + this. One shared budget across both retry causes.
+ * Bounded so a persistently wedged backend can't loop forever.
  * Override with `VICOOP_CODEX_UPSTREAM_MAX_RETRIES`.
  */
 const UPSTREAM_MAX_RETRIES = (() => {
@@ -165,8 +167,70 @@ const UPSTREAM_PATIENT_LAST = !/^(0|off|false|no)$/i.test(
   process.env.VICOOP_CODEX_UPSTREAM_PATIENT_LAST ?? "",
 );
 
+/**
+ * Base delay before retrying an attempt that came back with a retryable error
+ * STATUS (as opposed to a stall, which retries immediately — by the time the
+ * watchdog fires, ~60s have already passed). A bad status can arrive within
+ * milliseconds, so a short pause avoids hammering an upstream that is actively
+ * erroring. Scaled linearly by attempt; a valid `Retry-After` header takes
+ * precedence. Override with `VICOOP_CODEX_UPSTREAM_RETRY_BACKOFF_MS`.
+ */
+const UPSTREAM_RETRY_BACKOFF_MS = (() => {
+  const raw = process.env.VICOOP_CODEX_UPSTREAM_RETRY_BACKOFF_MS;
+  if (raw === undefined || raw === "") return 1_000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 1_000;
+})();
+
+/** Ceiling for any single bad-status retry delay (incl. `Retry-After`). */
+const UPSTREAM_RETRY_BACKOFF_CAP_MS = 30_000;
+
 /** Sentinel resolved by the first-header watchdog when it wins the race. */
 const STALL = Symbol("upstream_stall");
+
+/**
+ * Received-but-error statuses worth retrying on a fresh connection to the SAME
+ * account (issue #45: a transient Cloudflare 520 with headers is never a stall,
+ * so it previously surfaced straight to the caller). Deliberately narrower than
+ * backend.ts's `isFallbackWorthyStatus`: auth failures (401/403) are excluded
+ * because an immediate same-account retry cannot fix them — 401 already gets a
+ * one-shot token refresh inside `fetchCodexBackend`.
+ */
+function isRetryableStatus(status: number): boolean {
+  return (
+    status === 408 ||
+    status === 409 ||
+    status === 425 ||
+    status === 429 ||
+    status >= 500
+  );
+}
+
+/** Parse a `Retry-After` header (delta-seconds or HTTP-date) into millis. */
+function retryAfterMs(res: Response): number | undefined {
+  const raw = res.headers.get("retry-after");
+  if (!raw) return undefined;
+  const secs = Number(raw);
+  if (Number.isFinite(secs) && secs >= 0) return secs * 1000;
+  const date = Date.parse(raw);
+  if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+  return undefined;
+}
+
+/** Sleep that resolves early (never rejects) when the signal aborts. */
+function interruptibleSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (ms <= 0 || signal.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    function done() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    }
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
 
 /** Combine abort signals; the result fires when the first of them does. */
 function combineSignals(...signals: Array<AbortSignal | undefined>): AbortSignal {
@@ -443,6 +507,38 @@ export async function postUpstream(
         res.headers.get("cf-ray") ??
         undefined,
     });
+    // A received-but-error status (e.g. a transient Cloudflare 520) is not a
+    // stall — headers arrived — but before any body bytes have been streamed it
+    // is just as safe to retry: nothing has been emitted downstream, and the
+    // request body is a re-sendable string. Retry retryable statuses on a fresh
+    // connection, sharing the attempt budget (and absolute deadline) with the
+    // stall path. The LAST attempt's response is always returned as-is so
+    // error formatting downstream is unchanged.
+    if (!res.ok && isRetryableStatus(res.status) && attempt < UPSTREAM_MAX_RETRIES) {
+      await res.body?.cancel().catch(() => {});
+      const remaining = UPSTREAM_DEADLINE_MS - (Date.now() - startedAt);
+      const delayMs = Math.max(
+        0,
+        Math.min(
+          retryAfterMs(res) ?? UPSTREAM_RETRY_BACKOFF_MS * (attempt + 1),
+          UPSTREAM_RETRY_BACKOFF_CAP_MS,
+          remaining,
+        ),
+      );
+      logUpstream({
+        seq,
+        phase: "retry",
+        when: "bad_status",
+        status: res.status,
+        attempt: attempt + 1,
+        delayMs,
+        ms: Date.now() - startedAt,
+      });
+      // If the caller aborts or the deadline fires mid-sleep, the next fetch
+      // attempt rejects immediately and surfaces through the pre_headers path.
+      await interruptibleSleep(delayMs, combineSignals(signal, deadline));
+      continue;
+    }
     if (!res.ok || !res.body) return res;
     return new Response(instrumentBody(res.body, seq, startedAt), {
       status: res.status,
