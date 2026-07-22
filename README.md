@@ -300,9 +300,12 @@ Within that deadline the call retries up to `VICOOP_CODEX_UPSTREAM_MAX_RETRIES`
 default 60s) or comes back with a **transient error status** (5xx — e.g. a
 Cloudflare 520 — or 408/409/425/429) before any body bytes were streamed.
 Bad-status retries pause `VICOOP_CODEX_UPSTREAM_RETRY_BACKOFF_MS` (default 1s,
-scaled by attempt; a `Retry-After` header takes precedence) between attempts;
-stall retries fire immediately. Both appear in the `[upstream]` log as
-`phase:"retry"` (`when:"bad_status"` for the latter).
+scaled by attempt, capped at 30s; a `Retry-After` header takes precedence)
+between attempts; stall retries fire immediately. Both appear in the
+`[upstream]` log as `phase:"retry"` (`when:"bad_status"` for the latter). When a
+retry is hopeless the concrete error response is returned as-is instead: a
+`Retry-After` beyond the 30s cap (e.g. a hard-quota 429), or under 10s of the
+deadline remaining.
 
 ### Orphan protection (parent-death watchdog)
 

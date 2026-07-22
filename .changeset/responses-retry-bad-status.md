@@ -18,6 +18,8 @@ connection is attempted, sharing the existing attempt budget
 (`VICOOP_CODEX_UPSTREAM_MAX_RETRIES`) and absolute deadline with the stall
 path. Bad-status retries pause `VICOOP_CODEX_UPSTREAM_RETRY_BACKOFF_MS`
 (default 1s, scaled by attempt, capped at 30s; a `Retry-After` header takes
-precedence) between attempts. The last attempt's response is still returned
-as-is, so downstream error formatting is unchanged. Logged as
+precedence) between attempts. Hopeless cases skip the retry and return the
+concrete error response instead: a `Retry-After` beyond the cap (hard-quota
+429) or under 10s of deadline remaining. The last attempt's response is still
+returned as-is, so downstream error formatting is unchanged. Logged as
 `phase:"retry", when:"bad_status"` in the `[upstream]` instrumentation.

@@ -185,6 +185,13 @@ const UPSTREAM_RETRY_BACKOFF_MS = (() => {
 /** Ceiling for any single bad-status retry delay (incl. `Retry-After`). */
 const UPSTREAM_RETRY_BACKOFF_CAP_MS = 30_000;
 
+/**
+ * Minimum deadline headroom for a bad-status retry to be worth attempting;
+ * with less than this remaining, the concrete error response is returned
+ * instead (a retry would be deadline-aborted and lose the upstream evidence).
+ */
+const UPSTREAM_RETRY_MIN_REMAINING_MS = 10_000;
+
 /** Sentinel resolved by the first-header watchdog when it wins the race. */
 const STALL = Symbol("upstream_stall");
 
@@ -217,12 +224,19 @@ function retryAfterMs(res: Response): number | undefined {
   return undefined;
 }
 
-/** Sleep that resolves early (never rejects) when the signal aborts. */
+/**
+ * Sleep that resolves early (never rejects) when the signal aborts.
+ *
+ * The timer is deliberately NOT unref'd: during a bad-status backoff the error
+ * body has been cancelled and no socket is in flight, so in a one-shot Node
+ * `call` this timer can be the ONLY thing keeping the event loop alive — an
+ * unref'd timer would let the process exit silently mid-retry (verified under
+ * Node; the deadline clamp bounds the hold to seconds).
+ */
 function interruptibleSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (ms <= 0 || signal.aborted) return resolve();
     const timer = setTimeout(done, ms);
-    (timer as unknown as { unref?: () => void }).unref?.();
     function done() {
       clearTimeout(timer);
       signal.removeEventListener("abort", done);
@@ -515,12 +529,27 @@ export async function postUpstream(
     // stall path. The LAST attempt's response is always returned as-is so
     // error formatting downstream is unchanged.
     if (!res.ok && isRetryableStatus(res.status) && attempt < UPSTREAM_MAX_RETRIES) {
-      await res.body?.cancel().catch(() => {});
       const remaining = UPSTREAM_DEADLINE_MS - (Date.now() - startedAt);
+      const retryAfter = retryAfterMs(res);
+      // Two cases where retrying is hopeless and the CONCRETE response (status,
+      // cf-ray, error body) is worth more than a doomed extra attempt:
+      //   - the server directed a wait longer than we are willing to sleep
+      //     (e.g. a hard-quota 429 with Retry-After: 600 — a retry inside our
+      //     cap would just get the same answer), or
+      //   - too little of the deadline remains for a retry to realistically
+      //     complete (it would be aborted pre-headers and surface as a generic
+      //     timeout, losing the upstream evidence).
+      if (
+        (retryAfter !== undefined && retryAfter > UPSTREAM_RETRY_BACKOFF_CAP_MS) ||
+        remaining < UPSTREAM_RETRY_MIN_REMAINING_MS
+      ) {
+        return res;
+      }
+      await res.body?.cancel().catch(() => {});
       const delayMs = Math.max(
         0,
         Math.min(
-          retryAfterMs(res) ?? UPSTREAM_RETRY_BACKOFF_MS * (attempt + 1),
+          retryAfter ?? UPSTREAM_RETRY_BACKOFF_MS * (attempt + 1),
           UPSTREAM_RETRY_BACKOFF_CAP_MS,
           remaining,
         ),
@@ -534,9 +563,24 @@ export async function postUpstream(
         delayMs,
         ms: Date.now() - startedAt,
       });
-      // If the caller aborts or the deadline fires mid-sleep, the next fetch
-      // attempt rejects immediately and surfaces through the pre_headers path.
       await interruptibleSleep(delayMs, combineSignals(signal, deadline));
+      // If the caller aborted or the deadline fired mid-sleep, don't launch
+      // another attempt — it would re-run the whole multi-account fallback walk
+      // (candidate resolution can even perform a token-refresh network call)
+      // with a dead signal, stamping a spurious abort error into every
+      // account's metadata before failing anyway.
+      const abortedBy = signal?.aborted ? signal : deadline.aborted ? deadline : undefined;
+      if (abortedBy) {
+        logUpstream({
+          seq,
+          phase: "error",
+          when: "aborted_backoff",
+          attempt,
+          ms: Date.now() - startedAt,
+          err: String((abortedBy.reason as Error)?.message ?? abortedBy.reason ?? "aborted"),
+        });
+        throw abortedBy.reason ?? new Error("aborted during retry backoff");
+      }
       continue;
     }
     if (!res.ok || !res.body) return res;
