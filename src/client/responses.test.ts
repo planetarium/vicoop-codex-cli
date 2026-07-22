@@ -23,6 +23,8 @@ process.env.VICOOP_CODEX_UPSTREAM_MAX_RETRIES = "1";
 // Fail fast on every attempt (incl. the last) here so the exhaustion path is
 // deterministic; the patient-last behavior is covered in responses.patient.test.ts.
 process.env.VICOOP_CODEX_UPSTREAM_PATIENT_LAST = "0";
+// No backoff pause between bad-status retries so those paths run instantly.
+process.env.VICOOP_CODEX_UPSTREAM_RETRY_BACKOFF_MS = "0";
 // Silence the [upstream] stderr instrumentation during tests.
 process.env.VICOOP_CODEX_UPSTREAM_LOG = "0";
 
@@ -144,6 +146,99 @@ test("postUpstream throws upstream_stalled after retries are exhausted", async (
   );
   // 1 initial attempt + 1 retry (VICOOP_CODEX_UPSTREAM_MAX_RETRIES=1).
   assert.equal(calls, 2);
+});
+
+// A received-but-error response: headers arrive, status is bad (issue #45's
+// transient Cloudflare 520 with the OpenAI-branded HTML error page as body).
+function badStatus(status: number, headers?: Record<string, string>): Response {
+  return new Response("<html>error</html>", { status, headers });
+}
+
+test("postUpstream retries a transient 520 and succeeds on the fresh connection", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    if (calls === 1) return badStatus(520);
+    return sseOk();
+  }) as typeof fetch;
+
+  const res = await postUpstream({ model: "gpt-5.5" });
+  assert.equal(res.status, 200);
+  assert.equal(calls, 2, "should have retried exactly once after the 520");
+});
+
+test("postUpstream returns the final bad response after retries are exhausted", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    return badStatus(520); // every attempt errors
+  }) as typeof fetch;
+
+  const res = await postUpstream({ model: "gpt-5.5" });
+  // 1 initial attempt + 1 retry (VICOOP_CODEX_UPSTREAM_MAX_RETRIES=1); the last
+  // attempt's response is returned as-is so error formatting is unchanged.
+  assert.equal(calls, 2);
+  assert.equal(res.status, 520);
+});
+
+test("postUpstream honors Retry-After delta-seconds on a retryable status", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    // Retry-After: 0 exercises the delta-seconds parse arm without slowing the
+    // test (delay computes to 0).
+    if (calls === 1) return badStatus(503, { "retry-after": "0" });
+    return sseOk();
+  }) as typeof fetch;
+
+  const res = await postUpstream({ model: "gpt-5.5" });
+  assert.equal(res.status, 200);
+  assert.equal(calls, 2);
+});
+
+test("postUpstream honors an HTTP-date Retry-After in the past (retries immediately)", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    if (calls === 1)
+      return badStatus(429, {
+        "retry-after": new Date(Date.now() - 60_000).toUTCString(),
+      });
+    return sseOk();
+  }) as typeof fetch;
+
+  const res = await postUpstream({ model: "gpt-5.5" });
+  assert.equal(res.status, 200);
+  assert.equal(calls, 2);
+});
+
+test("postUpstream returns a 429 as-is when Retry-After exceeds the backoff cap", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    // A hard-quota 429: the server directs a wait far beyond our 30s cap, so a
+    // capped retry would just get the same answer — fail fast with the real
+    // response instead of sleeping.
+    return badStatus(429, { "retry-after": "600" });
+  }) as typeof fetch;
+
+  const res = await postUpstream({ model: "gpt-5.5" });
+  assert.equal(calls, 1, "a server-directed long wait must not be retried");
+  assert.equal(res.status, 429);
+  // The body must NOT have been cancelled — callers read it for the error message.
+  assert.equal(await res.text(), "<html>error</html>");
+});
+
+test("postUpstream does not retry a non-retryable status", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    return badStatus(400); // caller error — retrying cannot help
+  }) as typeof fetch;
+
+  const res = await postUpstream({ model: "gpt-5.5" });
+  assert.equal(calls, 1, "a 4xx caller error must not retry");
+  assert.equal(res.status, 400);
 });
 
 test("postUpstream returns the first response when headers arrive promptly", async () => {

@@ -294,6 +294,19 @@ serve` as a child and captures its stdio, so stderr lines do **not** reach
 The absolute ceiling for a single `/responses` call is `VICOOP_CODEX_UPSTREAM_TIMEOUT_MS`
 (default 9 min); a stuck upstream is aborted at that deadline.
 
+Within that deadline the call retries up to `VICOOP_CODEX_UPSTREAM_MAX_RETRIES`
+(default 2) extra attempts on a fresh connection when an attempt either
+**stalls** (no response headers within `VICOOP_CODEX_UPSTREAM_FIRST_HEADER_MS`,
+default 60s) or comes back with a **transient error status** (5xx — e.g. a
+Cloudflare 520 — or 408/409/425/429) before any body bytes were streamed.
+Bad-status retries pause `VICOOP_CODEX_UPSTREAM_RETRY_BACKOFF_MS` (default 1s,
+scaled by attempt, capped at 30s; a `Retry-After` header takes precedence)
+between attempts; stall retries fire immediately. Both appear in the
+`[upstream]` log as `phase:"retry"` (`when:"bad_status"` for the latter). When a
+retry is hopeless the concrete error response is returned as-is instead: a
+`Retry-After` beyond the 30s cap (e.g. a hard-quota 429), or under 10s of the
+deadline remaining.
+
 ### Orphan protection (parent-death watchdog)
 
 When `serve` is run as a child of another process (e.g. the bridge's
