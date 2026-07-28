@@ -1,6 +1,6 @@
 # vicoop-router e2e 가이드
 
-`apps/web-vicoop-test` (Next.js) → `a2x-internal-router` (fly.dev) → `vicoop-bridge` (fly.dev WS) → 로컬 `vicoop-client` daemon → `vicoop-codex` CLI → ChatGPT 경로로 이미지 생성 e2e를 돌리는 절차를 처음부터 끝까지 정리한 문서. 새 세션에서 이 문서만 보면 서버 기동 → 호출 → 모니터링 → 디버깅까지 한 번에 가능해야 함.
+`apps/web-vicoop-test` (Next.js) → `vicoop-router` (fly.dev) → `vicoop-bridge` (fly.dev WS) → 로컬 `vicoop-client` daemon → `vicoop-codex` CLI → ChatGPT 경로로 이미지 생성 e2e를 돌리는 절차를 처음부터 끝까지 정리한 문서. 새 세션에서 이 문서만 보면 서버 기동 → 호출 → 모니터링 → 디버깅까지 한 번에 가능해야 함.
 
 ## 프로젝트 구성
 apps/web-vicoop-test는 a2x-comfyui-gen 모노레포 프로젝트에 포함되어있으며, apps/mcp-server도 함께 포함되어있다.
@@ -16,8 +16,8 @@ vicoop-client는 vicoop-bridge 모노레포 프로젝트에 포함된 packages/c
 curl POST localhost:3000/api/a2a
   └─> apps/web-vicoop-test (Next.js, :3000)
        └─> @a2x/sdk LlmAgent
-            └─> OpenAI SDK (baseURL=a2x-internal-router.fly.dev/api/v1)
-                 └─> a2x-internal-router (fly.dev) ─ oai2a2a 게이트웨이
+            └─> OpenAI SDK (baseURL=vicoop-router.fly.dev/api/v1)
+                 └─> vicoop-router (fly.dev) ─ oai2a2a 게이트웨이
                       └─> vicoop-bridge-server (fly.dev, WSS) ─ 라우터
                            └─> 로컬 vicoop-client daemon (agent_id=ven-codex-local-home)
                                 └─> spawns `vicoop-codex call`
@@ -100,7 +100,7 @@ vicoop-client agent register --name ven-codex-local-home \
 
 ```
 OPENAI_API_KEY=o2a-live-<...>
-OPENAI_BASE_URL=https://a2x-internal-router.fly.dev/api/v1
+OPENAI_BASE_URL=https://vicoop-router.fly.dev/api/v1
 OPENAI_MODEL=ven-codex-local-home
 BASE_URL=http://localhost:3000
 A2A_API_KEY=<X-API-Key 헤더 값>
@@ -126,7 +126,7 @@ Tigris 키 만료/없을 때: `flyctl storage dashboard morning-frog-3454` 로 �
 ### 2.4 외부 의존성 (관리 대상 아님 — 살아 있는지만 확인)
 
 - `https://vicoop-bridge-server.fly.dev` (fly app `vicoop-bridge-server`, org `vicoop-797`)
-- `https://a2x-internal-router.fly.dev` (fly app `a2x-internal-router`)
+- `https://vicoop-router.fly.dev` (fly app `vicoop-router`)
 - ComfyUI 백엔드 (mcp-server의 `MCP_API_URL` 또는 그 내부 ComfyUI WS 설정이 가리키는 곳)
 - Tigris 버킷 `morning-frog-3454`
 
@@ -585,7 +585,7 @@ done
 |---|---|---|
 | vicoop-bridge WS | `wss://vicoop-bridge-server.fly.dev` | daemon 연결 |
 | vicoop-bridge HTTPS | `https://vicoop-bridge-server.fly.dev` | owner-session OAuth, agent register, agent card |
-| a2x-internal-router | `https://a2x-internal-router.fly.dev/api/v1` | OpenAI-compatible 게이트웨이. `OPENAI_BASE_URL` 가 가리킴 |
+| vicoop-router | `https://vicoop-router.fly.dev/api/v1` | OpenAI-compatible 게이트웨이. `OPENAI_BASE_URL` 가 가리킴 |
 | Tigris 콘솔 | `https://console.storage.dev` | 액세스 키 발급 (사용자 fly 계정으로 로그인) |
 | Tigris bucket URL prefix | `https://morning-frog-3454.fly.storage.tigris.dev` | 생성된 이미지 public URL |
 | fly org | slug `vicoop-797` | `flyctl storage list -o vicoop-797` |
@@ -596,7 +596,7 @@ done
 |---|---|---|
 | `~/.vicoop/config.json` `server_token` | agent register 시 한 번만 발급 | 비공개 (로컬 file 0600) |
 | `apps/web-vicoop-test/.env` `A2A_API_KEY` | X-API-Key 헤더 값 | 비공개 (로컬 .env) |
-| `apps/web-vicoop-test/.env` `OPENAI_API_KEY` (`o2a-live-…`) | a2x-internal-router 인증 키 | 비공개 |
+| `apps/web-vicoop-test/.env` `OPENAI_API_KEY` (`o2a-live-…`) | vicoop-router 인증 키 | 비공개 |
 | `apps/mcp-server/.env` `TIGRIS_*` | Tigris 콘솔 발급 | 비공개 |
 
 문서나 PR description 에는 절대 적지 말 것. `.env` 는 `.gitignore` 에 들어 있는지 확인.
