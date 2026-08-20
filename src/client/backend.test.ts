@@ -25,6 +25,7 @@ const {
   codexUserAgent,
   buildCodexHeaders,
   CODEX_BACKEND_CLIENT_VERSION,
+  LEGACY_USER_AGENT,
 } = await import("./backend.js");
 type AuthFile = import("../auth/store.js").AuthFile;
 
@@ -115,32 +116,61 @@ test("onAccount reports the account whose response is returned (post-fallback)",
   assert.equal(used?.email, "b@example.com");
 });
 
-test("codexUserAgent carries the codex_cli_rs/<version> gate prefix (unlocks gpt-5.6-luna)", () => {
-  const ua = codexUserAgent();
-  // The ChatGPT Codex backend only routes gpt-5.6-luna to a live engine when
-  // the UA prefix matches the official CLI signature; a stale/plain UA 404s.
-  // (openai/codex#31967) Guard the exact prefix + version pinning here.
-  assert.equal(
-    ua.startsWith(`codex_cli_rs/${CODEX_BACKEND_CLIENT_VERSION} `),
-    true,
-    `UA must start with codex_cli_rs/<version>, got: ${ua}`,
-  );
-  // Keep honest vicoop attribution in the suffix (the gate ignores it).
-  assert.match(ua, /vicoop-codex-cli\//);
+test("codexUserAgent is conditional: legacy (cache-safe) by default, codex_cli_rs only for luna", () => {
+  // Non-luna models and model-less calls keep the legacy identity — presenting
+  // codex_cli_rs on them collapses prompt-cache hit rates ~5x (#48).
+  assert.equal(codexUserAgent(), LEGACY_USER_AGENT);
+  assert.equal(codexUserAgent("gpt-5.5"), LEGACY_USER_AGENT);
+  assert.equal(codexUserAgent("gpt-5.6-sol"), LEGACY_USER_AGENT);
+  assert.equal(codexUserAgent("gpt-5.6-terra"), LEGACY_USER_AGENT);
+
+  // gpt-5.6-luna requires the official CLI signature — the backend only routes
+  // it to a live engine on the codex_cli_rs UA prefix; a plain UA 404s
+  // (openai/codex#31967). Guard the exact prefix + version pinning here.
+  for (const luna of ["gpt-5.6-luna", "gpt-5.6-luna-mini"]) {
+    const ua = codexUserAgent(luna);
+    assert.equal(
+      ua.startsWith(`codex_cli_rs/${CODEX_BACKEND_CLIENT_VERSION} `),
+      true,
+      `UA for ${luna} must start with codex_cli_rs/<version>, got: ${ua}`,
+    );
+    // Keep honest vicoop attribution in the suffix (the gate ignores it).
+    assert.match(ua, /vicoop-codex-cli\//);
+  }
 });
 
-test("buildCodexHeaders sends the codex_cli_rs UA + originator pair", () => {
-  const headers = buildCodexHeaders({
-    accessToken: "tok",
-    accountId: "acct-1",
-  } as never);
-  assert.equal(headers.get("originator"), "codex_cli_rs");
-  assert.equal(headers.get("User-Agent"), codexUserAgent());
+test("buildCodexHeaders picks the UA from the target model, originator stays fixed", () => {
+  const auth = { accessToken: "tok", accountId: "acct-1" } as never;
+
+  const plain = buildCodexHeaders(auth);
+  assert.equal(plain.get("originator"), "codex_cli_rs");
+  assert.equal(plain.get("User-Agent"), LEGACY_USER_AGENT);
+
+  const luna = buildCodexHeaders(auth, undefined, "gpt-5.6-luna");
+  assert.equal(luna.get("originator"), "codex_cli_rs");
   assert.equal(
-    headers.get("User-Agent")?.startsWith("codex_cli_rs/"),
+    luna.get("User-Agent")?.startsWith("codex_cli_rs/"),
     true,
-    "originator+UA must both present the codex_cli_rs identity (AND-gate)",
+    "luna requests must present the codex_cli_rs identity (AND-gate)",
   );
+});
+
+test("fetchCodexBackend threads opts.model into the wire User-Agent", async () => {
+  const seen: Array<string | null> = [];
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    seen.push(new Headers(init?.headers).get("User-Agent"));
+    return new Response("ok", { status: 200 });
+  }) as typeof fetch;
+
+  await fetchCodexBackend("/responses", { method: "POST", body: "{}" });
+  await fetchCodexBackend(
+    "/responses",
+    { method: "POST", body: "{}" },
+    undefined,
+    { model: "gpt-5.6-luna" },
+  );
+  assert.equal(seen[0], LEGACY_USER_AGENT);
+  assert.equal(seen[1]?.startsWith("codex_cli_rs/"), true);
 });
 
 test("isFallbackWorthyStatus policy", () => {

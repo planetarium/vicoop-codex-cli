@@ -9,7 +9,11 @@ function withFakeFetch(
 ): Promise<void> {
   const captured: { url: string; headers: Headers }[] = [];
   const real = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  // `Parameters<typeof fetch>[0]` instead of the `RequestInfo | URL` global:
+  // the RequestInfo alias is not exported by every @types/node line this repo
+  // resolves to (present on CI's install, absent on @types/node 22.19.x), while
+  // the derived parameter type is correct on all of them.
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     captured.push({
       url: String(input),
       headers: new Headers(init?.headers),

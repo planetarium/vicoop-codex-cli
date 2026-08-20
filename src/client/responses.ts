@@ -393,6 +393,16 @@ export async function postUpstream(
   });
 
   const payload = JSON.stringify(body);
+  // Surface the request's model to the fetch layer so it can pick the right
+  // User-Agent (`codexUserAgent(model)`): luna needs the official codex_cli_rs
+  // signature, every other model keeps the legacy cache-safe UA (#48). A
+  // caller-supplied opts.model (none today) would win over the body's.
+  const bodyModel = (body as { model?: unknown } | null)?.model;
+  const fetchOpts: FetchCodexOptions = {
+    ...opts,
+    model:
+      opts?.model ?? (typeof bodyModel === "string" ? bodyModel : undefined),
+  };
   // A single absolute deadline spans ALL attempts, so retrying on a stall can
   // never push the total past the bridge's per-task timeout (the retries fire
   // fast — at the ~60s watchdog, not the 9-min deadline).
@@ -440,7 +450,7 @@ export async function postUpstream(
         signal: attemptSignal,
       },
       undefined,
-      opts,
+      fetchOpts,
     );
 
     let outcome: Response | typeof STALL;

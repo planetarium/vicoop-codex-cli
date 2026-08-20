@@ -11,7 +11,20 @@ export const CODEX_BACKEND_CLIENT_VERSION = "0.145.0";
 export type CodexBackendPath = "/responses" | "/models";
 
 /**
- * User-Agent presented to the ChatGPT Codex backend.
+ * Legacy User-Agent — the identity every release up to 0.6.3 presented, and the
+ * cache-safe one. Presenting the official-CLI signature instead (0.6.4+, see
+ * `codexCliUserAgent`) makes the backend treat us as a modern Codex client and
+ * demonstrably collapses prompt-cache hit rates: production hit *ratio* fell
+ * 78–93% → 30–51% across ALL models right at the 0.6.4 rollout, and a
+ * controlled same-day A/B on gpt-5.6-sol (v0.6.3 vs v0.8.2, interleaved,
+ * Fisher p=0.032) measured 27.0% vs 5.6% — a ~5x drop attributable to the UA
+ * alone (planetarium/vicoop-codex-cli#48). Kept verbatim (stale version and
+ * all) because this exact string is the empirically validated identity.
+ */
+export const LEGACY_USER_AGENT = "vicoop-codex-cli/0.1.0";
+
+/**
+ * Whether a model slug requires the official Codex CLI User-Agent signature.
  *
  * The backend gates its client identity on an AND of `originator` + `User-Agent`.
  * Most model slugs (gpt-5.5, gpt-5.6-sol, gpt-5.6-terra) pass on the originator
@@ -20,13 +33,38 @@ export type CodexBackendPath = "/responses" | "/models";
  * signature `codex_cli_rs/<version>` — otherwise the slug resolves to a missing
  * engine and the backend replies 404 "Model not found gpt-5.6-luna" (confirmed
  * empirically: flipping only the UA prefix flips 404 -> 200 with the same token
- * and originator; see openai/codex#31967). The gate only inspects the
+ * and originator; see openai/codex#31967). `startsWith` so luna point releases
+ * (e.g. a future gpt-5.6-luna-mini) stay covered.
+ */
+export function modelRequiresCodexCliUa(model?: string): boolean {
+  return typeof model === "string" && model.startsWith("gpt-5.6-luna");
+}
+
+/**
+ * The official-CLI User-Agent signature. The gate only inspects the
  * `codex_cli_rs/<version>` prefix, so we keep an honest vicoop attribution in
  * the suffix. The version is pinned to CODEX_BACKEND_CLIENT_VERSION so it stays
  * in lockstep with the model catalog our client_version already advertises.
  */
-export function codexUserAgent(): string {
+export function codexCliUserAgent(): string {
   return `codex_cli_rs/${CODEX_BACKEND_CLIENT_VERSION} (${process.platform}; ${process.arch}) vicoop-codex-cli/0.1.0`;
+}
+
+/**
+ * User-Agent presented to the ChatGPT Codex backend for a request targeting
+ * `model` (undefined for model-less calls: GET /models, the usage endpoint).
+ *
+ * Conditional by design: the `codex_cli_rs` signature is required ONLY by
+ * gpt-5.6-luna (`modelRequiresCodexCliUa`), while presenting it on everything
+ * else costs ~5x in prompt-cache hits (#48, measurements on
+ * `LEGACY_USER_AGENT`). So luna requests carry the official signature and every
+ * other call keeps the legacy, cache-safe identity — luna access and cache
+ * behavior are both preserved. The `/models` catalog itself is unaffected:
+ * model availability there is gated by the `client_version` query param, and
+ * the full 5.6 family lists under the legacy UA (verified on v0.6.3).
+ */
+export function codexUserAgent(model?: string): string {
+  return modelRequiresCodexCliUa(model) ? codexCliUserAgent() : LEGACY_USER_AGENT;
 }
 
 function buildCodexBackendUrl(path: CodexBackendPath, query?: URLSearchParams): string {
@@ -45,11 +83,12 @@ function buildCodexBackendUrl(path: CodexBackendPath, query?: URLSearchParams): 
 export function buildCodexHeaders(
   auth: ActiveAuth,
   extra?: RequestInit["headers"],
+  model?: string,
 ): Headers {
   const headers = new Headers(extra);
   headers.set("Authorization", `Bearer ${auth.accessToken}`);
   headers.set("OAI-Product-Sku", "codex");
-  headers.set("User-Agent", codexUserAgent());
+  headers.set("User-Agent", codexUserAgent(model));
   headers.set("originator", "codex_cli_rs");
   if (auth.accountId) headers.set("ChatGPT-Account-ID", auth.accountId);
   return headers;
@@ -60,10 +99,11 @@ async function fetchWithAuth(
   path: CodexBackendPath,
   init: RequestInit = {},
   query?: URLSearchParams,
+  model?: string,
 ): Promise<Response> {
   const reqInit: RequestInit = {
     ...init,
-    headers: buildCodexHeaders(auth, init.headers),
+    headers: buildCodexHeaders(auth, init.headers, model),
   };
   // Only the long-lived streaming `/responses` call needs its inter-chunk idle
   // timeout disabled (a reasoning model can stay silent for minutes before its
@@ -97,6 +137,13 @@ export interface UsedAccountInfo {
 export interface FetchCodexOptions {
   /** Invoked with the account whose response is returned (after fallback resolves). */
   onAccount?: (info: UsedAccountInfo) => void;
+  /**
+   * Model slug the request targets, when known. Drives User-Agent selection
+   * (`codexUserAgent(model)`): gpt-5.6-luna gets the official `codex_cli_rs`
+   * signature it requires; everything else keeps the legacy, cache-safe UA
+   * (#48). Omit for model-less calls (GET /models, usage).
+   */
+  model?: string;
 }
 
 function accountLogEnabled(): boolean {
@@ -179,7 +226,7 @@ export async function fetchCodexBackend(
 
     let res: Response;
     try {
-      res = await fetchWithAuth(auth, path, init, query);
+      res = await fetchWithAuth(auth, path, init, query, opts?.model);
     } catch (err) {
       lastError = err;
       if (logging) {
@@ -196,7 +243,7 @@ export async function fetchCodexBackend(
       await discardBody(res);
       try {
         auth = await candidate.refresh();
-        res = await fetchWithAuth(auth, path, init, query);
+        res = await fetchWithAuth(auth, path, init, query, opts?.model);
       } catch (err) {
         lastError = err;
         if (logging) {
