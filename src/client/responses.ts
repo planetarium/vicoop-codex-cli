@@ -1,4 +1,5 @@
 import { appendFile } from "node:fs";
+import { createHash } from "node:crypto";
 import {
   fetchCodexBackend,
   type FetchCodexOptions,
@@ -24,13 +25,14 @@ export interface RunRequest {
   /**
    * When false (default), the prompt is not stored on the server. The ChatGPT
    * Codex backend in fact requires store:false (it rejects store:true), so this
-   * is effectively fixed; prompt caching works regardless via prompt_cache_key.
+   * is effectively fixed; prompt caching uses the session_id header independently.
    */
   store?: boolean;
   /**
-   * Optional cache-routing key sent upstream as `prompt_cache_key`. Pins
-   * same-prefix requests to one cache shard; when omitted the backend routes
-   * by prefix hash alone.
+   * Optional stable cache-routing key sent in the body and as session_id.
+   * The subscription backend replaces body-only keys with per-request UUIDs.
+   * Reuse a key across related requests; cache hits also require a matching
+   * prefix and account. Non-header-safe keys are hashed for the header only.
    */
   promptCacheKey?: string;
 }
@@ -370,6 +372,15 @@ function instrumentBody(
   });
 }
 
+function cacheSessionId(key: unknown): string | undefined {
+  if (typeof key !== "string" || key.length === 0) return undefined;
+  // Preserve ordinary caller/bridge keys. Bound header size and avoid invalid
+  // header characters (including Unicode and CR/LF) without changing the body.
+  return /^[\x21-\x7e]{1,256}$/.test(key)
+    ? key
+    : createHash("sha256").update(key).digest("hex");
+}
+
 /**
  * POST raw body to the ChatGPT Codex backend with auth + one-shot refresh on 401.
  * Returns the upstream Response without consuming its body. When the response is
@@ -393,6 +404,12 @@ export async function postUpstream(
   });
 
   const payload = JSON.stringify(body);
+  // ChatGPT's subscription endpoint uses session_id for cache routing and
+  // overwrites prompt_cache_key when that header is absent (#51).
+  // Resolve once so watchdog/status retries and account fallback share it.
+  const sessionId = cacheSessionId(
+    (body as { prompt_cache_key?: unknown } | null)?.prompt_cache_key,
+  );
   // Surface the request's model to the fetch layer so it can pick the right
   // User-Agent (`codexUserAgent(model)`): luna needs the official codex_cli_rs
   // signature, every other model keeps the legacy cache-safe UA (#48). A
@@ -445,6 +462,7 @@ export async function postUpstream(
         headers: {
           "Content-Type": "application/json",
           Accept: "text/event-stream",
+          ...(sessionId ? { session_id: sessionId } : {}),
         },
         body: payload,
         signal: attemptSignal,
