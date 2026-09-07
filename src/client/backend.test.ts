@@ -27,6 +27,7 @@ const {
   CODEX_BACKEND_CLIENT_VERSION,
   LEGACY_USER_AGENT,
 } = await import("./backend.js");
+const { fetchCodexModels } = await import("./models.js");
 type AuthFile = import("../auth/store.js").AuthFile;
 
 function b64url(obj: unknown): string {
@@ -88,6 +89,20 @@ test("falls back to a healthy account on a fallback-worthy status (429)", async 
   assert.deepEqual(calls, ["aaa", "bbb"]);
 });
 
+test("cache session header survives account fallback", async () => {
+  const { postUpstream } = await import("./responses.js");
+  const sessions: Array<string | null> = [];
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    sessions.push(headers.get("session_id"));
+    return new Response("ok", { status: headers.get("ChatGPT-Account-ID") === "aaa" ? 429 : 200 });
+  }) as typeof fetch;
+  const res = await postUpstream({ model: "gpt-6-astra", prompt_cache_key: "fallback-context" });
+  assert.equal(res.status, 200);
+  await res.text();
+  assert.deepEqual(sessions, ["fallback-context", "fallback-context"]);
+});
+
 test("does NOT fall back on a request-level error (400)", async () => {
   stub({ aaa: 400, bbb: 200 });
   const res = await fetchCodexBackend("/responses", { method: "POST", body: "{}" });
@@ -123,6 +138,7 @@ test("codexUserAgent is conditional: legacy (cache-safe) by default, codex_cli_r
   assert.equal(codexUserAgent("gpt-5.5"), LEGACY_USER_AGENT);
   assert.equal(codexUserAgent("gpt-5.6-sol"), LEGACY_USER_AGENT);
   assert.equal(codexUserAgent("gpt-5.6-terra"), LEGACY_USER_AGENT);
+  assert.equal(codexUserAgent("gpt-6-astra"), LEGACY_USER_AGENT);
 
   // gpt-5.6-luna requires the official CLI signature — the backend only routes
   // it to a live engine on the codex_cli_rs UA prefix; a plain UA 404s
@@ -171,6 +187,36 @@ test("fetchCodexBackend threads opts.model into the wire User-Agent", async () =
   );
   assert.equal(seen[0], LEGACY_USER_AGENT);
   assert.equal(seen[1]?.startsWith("codex_cli_rs/"), true);
+  await fetchCodexBackend(
+    "/responses",
+    { method: "POST", body: "{}" },
+    undefined,
+    { model: "gpt-6-astra" },
+  );
+  assert.equal(seen[2], LEGACY_USER_AGENT);
+});
+
+test("model catalog requests the Astra-capable version with legacy UA and preserves backend order", async () => {
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(String(input));
+    assert.equal(url.pathname, "/backend-api/codex/models");
+    assert.equal(url.searchParams.get("client_version"), "0.153.4");
+    assert.equal(init?.method, "GET");
+    assert.equal(new Headers(init?.headers).get("User-Agent"), LEGACY_USER_AGENT);
+    return Response.json({ models: [
+      { slug: "gpt-6-astra", context_window: 1050000 },
+      { slug: "gpt-reserve" },
+      { slug: "gpt-5.6-luna" },
+    ] });
+  }) as typeof fetch;
+
+  const result = await fetchCodexModels();
+  assert.equal(result.client_version, "0.153.4");
+  assert.deepEqual(result.models, [
+    { id: "gpt-6-astra", context_window: 1050000 },
+    { id: "gpt-reserve" },
+    { id: "gpt-5.6-luna" },
+  ]);
 });
 
 test("isFallbackWorthyStatus policy", () => {

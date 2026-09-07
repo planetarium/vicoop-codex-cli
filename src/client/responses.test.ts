@@ -109,9 +109,11 @@ afterEach(() => {
 
 test("postUpstream aborts a stalled attempt and retries a fresh connection", async () => {
   let calls = 0;
+  const sessions: Array<string | null> = [];
   const aborted: boolean[] = [];
   globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
     calls++;
+    sessions.push(new Headers(init?.headers).get("session_id"));
     if (calls === 1) {
       // First attempt hangs; the watchdog must abort THIS connection.
       init?.signal?.addEventListener("abort", () => aborted.push(true), {
@@ -122,10 +124,46 @@ test("postUpstream aborts a stalled attempt and retries a fresh connection", asy
     return sseOk(); // the retry succeeds fast
   }) as typeof fetch;
 
-  const res = await postUpstream({ model: "gpt-5.5" });
+  const res = await postUpstream({ model: "gpt-5.5", prompt_cache_key: "retry-session" });
   assert.equal(res.status, 200);
   assert.equal(calls, 2, "should have retried exactly once after the stall");
   assert.deepEqual(aborted, [true], "the stalled attempt's fetch must be aborted");
+  assert.deepEqual(sessions, ["retry-session", "retry-session"]);
+});
+
+test("postUpstream maps cache keys to safe stable session headers without changing the body", async () => {
+  const keys = [undefined, "", 123, "ctx-1:caller-0123456789abcdef", "대화-1", "bad\r\nheader", "x".repeat(257)];
+  for (const key of keys) {
+    const seen: Array<string | null> = [];
+    const body = { model: "gpt-6-astra", prompt_cache_key: key };
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers).get("session_id"));
+      assert.equal(init?.body, JSON.stringify(body));
+      return sseOk();
+    }) as typeof fetch;
+    for (let i = 0; i < 2; i++) await (await postUpstream(body)).text();
+    assert.equal(seen[0], seen[1]);
+    if (key === "ctx-1:caller-0123456789abcdef") assert.equal(seen[0], key);
+    else if (typeof key !== "string" || key.length === 0) assert.equal(seen[0], null);
+    else assert.match(seen[0]!, /^[a-f0-9]{64}$/);
+  }
+});
+
+test("translated call/serve and programmatic prompts both forward cache keys", async () => {
+  const { chatCompletionsToUpstream } = await import("../translate/chat-completions.js");
+  const { runResponse } = await import("./responses.js");
+  const sessions: Array<string | null> = [];
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    sessions.push(new Headers(init?.headers).get("session_id"));
+    return sseOk();
+  }) as typeof fetch;
+  const { upstream } = chatCompletionsToUpstream({
+    model: "gpt-6-astra", messages: [{ role: "user", content: "OK" }],
+    prompt_cache_key: "bridge-context:caller-0123456789abcdef",
+  });
+  await (await postUpstream(upstream)).text();
+  await runResponse({ model: "gpt-6-astra", prompt: "OK", promptCacheKey: "programmatic-context" });
+  assert.deepEqual(sessions, ["bridge-context:caller-0123456789abcdef", "programmatic-context"]);
 });
 
 test("postUpstream throws upstream_stalled after retries are exhausted", async () => {
