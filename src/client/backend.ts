@@ -3,9 +3,9 @@ import { loadAuthCandidates, type ActiveAuth } from "../auth/manager.js";
 const CHATGPT_CODEX_API_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
 // The ChatGPT Codex backend gates newer model slugs by client_version.
-// Bumped 0.145.0 -> 0.153.4 to expose gpt-6-astra; this version was verified
-// against both provider accounts in planetarium/vicoop-codex-cli#51.
-export const CODEX_BACKEND_CLIENT_VERSION = "0.153.4";
+// Version 0.163.0 exposes gpt-6.1-sol, gpt-6-sol, and gpt-6-luna.
+// Verified against both provider accounts with the legacy User-Agent.
+export const CODEX_BACKEND_CLIENT_VERSION = "0.163.0";
 
 export type CodexBackendPath = "/responses" | "/models";
 

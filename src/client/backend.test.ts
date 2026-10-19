@@ -196,24 +196,30 @@ test("fetchCodexBackend threads opts.model into the wire User-Agent", async () =
   assert.equal(seen[2], LEGACY_USER_AGENT);
 });
 
-test("model catalog requests the Astra-capable version with legacy UA and preserves backend order", async () => {
+test("model catalog requests the GPT-6-family-capable version with legacy UA and preserves backend order", async () => {
   globalThis.fetch = (async (input, init) => {
     const url = new URL(String(input));
     assert.equal(url.pathname, "/backend-api/codex/models");
-    assert.equal(url.searchParams.get("client_version"), "0.153.4");
+    assert.equal(url.searchParams.get("client_version"), "0.163.0");
     assert.equal(init?.method, "GET");
     assert.equal(new Headers(init?.headers).get("User-Agent"), LEGACY_USER_AGENT);
     return Response.json({ models: [
-      { slug: "gpt-6-astra", context_window: 1050000 },
+      { slug: "gpt-6.1-sol", context_window: 500000 },
+      { slug: "gpt-6-astra", context_window: 272000 },
+      { slug: "gpt-6-sol", context_window: 272000 },
+      { slug: "gpt-6-luna", context_window: 272000 },
       { slug: "gpt-reserve" },
       { slug: "gpt-5.6-luna" },
     ] });
   }) as typeof fetch;
 
   const result = await fetchCodexModels();
-  assert.equal(result.client_version, "0.153.4");
+  assert.equal(result.client_version, "0.163.0");
   assert.deepEqual(result.models, [
-    { id: "gpt-6-astra", context_window: 1050000 },
+    { id: "gpt-6.1-sol", context_window: 500000 },
+    { id: "gpt-6-astra", context_window: 272000 },
+    { id: "gpt-6-sol", context_window: 272000 },
+    { id: "gpt-6-luna", context_window: 272000 },
     { id: "gpt-reserve" },
     { id: "gpt-5.6-luna" },
   ]);
