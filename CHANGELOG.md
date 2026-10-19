@@ -1,5 +1,11 @@
 # vicoop-codex-cli
 
+## 0.8.5
+
+### Patch Changes
+
+- 56161fb: Update the Codex backend client version to 0.163.0 so model discovery includes gpt-6.1-sol, gpt-6-sol, and gpt-6-luna, preserving the context windows reported by the backend.
+
 ## 0.8.4
 
 ### Patch Changes
