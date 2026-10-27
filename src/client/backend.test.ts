@@ -139,6 +139,7 @@ test("codexUserAgent is conditional: legacy (cache-safe) by default, codex_cli_r
   assert.equal(codexUserAgent("gpt-5.6-sol"), LEGACY_USER_AGENT);
   assert.equal(codexUserAgent("gpt-5.6-terra"), LEGACY_USER_AGENT);
   assert.equal(codexUserAgent("gpt-6-astra"), LEGACY_USER_AGENT);
+  assert.equal(codexUserAgent("gpt-6.1-terra"), LEGACY_USER_AGENT);
 
   // gpt-5.6-luna requires the official CLI signature — the backend only routes
   // it to a live engine on the codex_cli_rs UA prefix; a plain UA 404s
@@ -206,6 +207,7 @@ test("model catalog requests the GPT-6-family-capable version with legacy UA and
     return Response.json({ models: [
       { slug: "gpt-6.1-sol", context_window: 500000 },
       { slug: "gpt-6-astra", context_window: 272000 },
+      { slug: "gpt-6.1-terra", context_window: 500000 },
       { slug: "gpt-6-sol", context_window: 272000 },
       { slug: "gpt-6-luna", context_window: 272000 },
       { slug: "gpt-reserve" },
@@ -218,6 +220,7 @@ test("model catalog requests the GPT-6-family-capable version with legacy UA and
   assert.deepEqual(result.models, [
     { id: "gpt-6.1-sol", context_window: 500000 },
     { id: "gpt-6-astra", context_window: 272000 },
+    { id: "gpt-6.1-terra", context_window: 500000 },
     { id: "gpt-6-sol", context_window: 272000 },
     { id: "gpt-6-luna", context_window: 272000 },
     { id: "gpt-reserve" },
